@@ -45,9 +45,28 @@ def send_telegram(message):
         print("Telegram error:", e)
 
 # ============================
+# Market Trend Function
+# ============================
+def get_market_trend():
+    try:
+        df = yf.download("^NSEI", period="5d", interval="15m")
+        df['ema20'] = ta.trend.EMAIndicator(df['Close'], window=20).ema_indicator()
+        df['ema50'] = ta.trend.EMAIndicator(df['Close'], window=50).ema_indicator()
+        latest = df.iloc[-1]
+        if latest['ema20'] > latest['ema50']:
+            return "BULL"
+        elif latest['ema20'] < latest['ema50']:
+            return "BEAR"
+        else:
+            return "SIDEWAYS"
+    except Exception as e:
+        print("Market trend error:", e)
+        return "SIDEWAYS"
+
+# ============================
 # Signal Logic
 # ============================
-def check_signal(symbol):
+def check_signal(symbol, market_trend):
     try:
         df = yf.download(symbol, period="5d", interval="15m")
         if df.empty or len(df) < 50:
@@ -66,22 +85,24 @@ def check_signal(symbol):
         price = latest['Close']
         atr = latest['atr']
 
-        # Buy Condition
+        # BUY Condition (Only if Market Bullish)
         if (latest['ema20'] > latest['ema50'] and
             previous['ema20'] <= previous['ema50'] and
             latest['rsi'] > 55 and
-            latest['Volume'] > latest['vol_avg']):
-            
+            latest['Volume'] > latest['vol_avg'] and
+            market_trend == "BULL"):
+
             sl = price - (1.2 * atr)
             target = price + 2 * (price - sl)
             return f"📈 BUY SIGNAL\nStock: {symbol}\nEntry: {round(price,2)}\nStop Loss: {round(sl,2)}\nTarget: {round(target,2)}\nRR: 1:2"
 
-        # Sell Condition
+        # SELL Condition (Only if Market Bearish)
         if (latest['ema20'] < latest['ema50'] and
             previous['ema20'] >= previous['ema50'] and
             latest['rsi'] < 45 and
-            latest['Volume'] > latest['vol_avg']):
-            
+            latest['Volume'] > latest['vol_avg'] and
+            market_trend == "BEAR"):
+
             sl = price + (1.2 * atr)
             target = price - 2 * (sl - price)
             return f"📉 SELL SIGNAL\nStock: {symbol}\nEntry: {round(price,2)}\nStop Loss: {round(sl,2)}\nTarget: {round(target,2)}\nRR: 1:2"
@@ -103,8 +124,11 @@ def job():
     if now.hour < 9 or (now.hour == 9 and now.minute < 15) or now.hour > 15:
         return
 
+    market_trend = get_market_trend()
+    print(f"Market Trend: {market_trend}")
+
     for stock in stocks:
-        signal = check_signal(stock)
+        signal = check_signal(stock, market_trend)
         if signal:
             send_telegram(signal)
             time.sleep(2)  # prevent Telegram flood
