@@ -7,10 +7,15 @@ import time
 import os
 from datetime import datetime
 
+# ============================
+# Environment variables
+# ============================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
-# Full stock list
+# ============================
+# Full Large + Midcap Stocks
+# ============================
 stocks = [
 "RELIANCE.NS","TCS.NS","INFY.NS","HDFCBANK.NS","ICICIBANK.NS",
 "ITC.NS","LT.NS","SBIN.NS","BHARTIARTL.NS","KOTAKBANK.NS",
@@ -26,6 +31,9 @@ stocks = [
 "ADANITRANS.NS","TORNTPHARM.NS","MINDTREE.NS","COLPAL.NS","PIDILITIND.NS"
 ]
 
+# ============================
+# Telegram Function
+# ============================
 def send_telegram(message):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     data = {"chat_id": CHAT_ID, "text": message}
@@ -34,6 +42,9 @@ def send_telegram(message):
     except:
         pass
 
+# ============================
+# Market Trend Function
+# ============================
 def get_market_trend():
     try:
         df = yf.download("^NSEI", period="5d", interval="15m")
@@ -49,6 +60,9 @@ def get_market_trend():
     except:
         return "SIDEWAYS"
 
+# ============================
+# Check Signals with Liquidity Filter
+# ============================
 def check_signals_batch(stocks, market_trend):
     tickers_str = " ".join(stocks)
     try:
@@ -63,6 +77,7 @@ def check_signals_batch(stocks, market_trend):
             if df.empty or len(df) < 50:
                 continue
 
+            # Indicators
             df['ema20'] = ta.trend.EMAIndicator(df['Close'], window=20).ema_indicator()
             df['ema50'] = ta.trend.EMAIndicator(df['Close'], window=50).ema_indicator()
             df['rsi'] = ta.momentum.RSIIndicator(df['Close'], window=14).rsi()
@@ -74,18 +89,26 @@ def check_signals_batch(stocks, market_trend):
             previous = df.iloc[-2]
             price = latest['Close']
             atr = latest['atr']
+            vol = latest['Volume']
+            vol_avg = latest['vol_avg']
 
-            # Buy signal
+            # Skip low-liquidity stocks
+            if vol < 1.2 * vol_avg:
+                continue
+
+            # BUY signal (Bull market only)
             if (latest['ema20'] > latest['ema50'] and previous['ema20'] <= previous['ema50'] 
-                and latest['rsi'] > 55 and latest['Volume'] > latest['vol_avg'] and market_trend=="BULL"):
+                and latest['rsi'] > 55 and market_trend=="BULL"):
+
                 sl = price - 1.2*atr
                 target = price + 2*(price - sl)
                 msg = f"📈 BUY\n{stock}\nEntry: {round(price,2)}\nSL: {round(sl,2)}\nTarget: {round(target,2)}\nRR:1:2"
                 send_telegram(msg)
 
-            # Sell signal
+            # SELL signal (Bear market only)
             elif (latest['ema20'] < latest['ema50'] and previous['ema20'] >= previous['ema50'] 
-                  and latest['rsi'] < 45 and latest['Volume'] > latest['vol_avg'] and market_trend=="BEAR"):
+                  and latest['rsi'] < 45 and market_trend=="BEAR"):
+
                 sl = price + 1.2*atr
                 target = price - 2*(sl - price)
                 msg = f"📉 SELL\n{stock}\nEntry: {round(price,2)}\nSL: {round(sl,2)}\nTarget: {round(target,2)}\nRR:1:2"
@@ -94,6 +117,9 @@ def check_signals_batch(stocks, market_trend):
         except Exception as e:
             print(f"Error {stock}: {e}")
 
+# ============================
+# Main Job
+# ============================
 def job():
     now = datetime.now()
     if now.weekday()>=5: return  # skip weekends
@@ -102,6 +128,9 @@ def job():
     print(f"Market Trend: {market_trend}")
     check_signals_batch(stocks, market_trend)
 
+# ============================
+# Schedule Job
+# ============================
 schedule.every(15).minutes.do(job)
 
 while True:
