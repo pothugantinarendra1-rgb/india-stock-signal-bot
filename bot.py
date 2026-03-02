@@ -8,7 +8,7 @@ import pytz
 from datetime import datetime
 
 # ================= CONFIG =================
-MODE = "LIVE"   # "LIVE" or "BACKTEST"
+MODE = "BACKTEST"   # "LIVE" or "BACKTEST"
 
 START_CAPITAL = 100000
 RISK_PER_TRADE = 0.015
@@ -71,11 +71,9 @@ def get_hourly_trend(symbol):
     df = get_data(symbol, interval="60m")
     if df is None or len(df) < 60:
         return None
-
     df["ema20"] = ta.trend.EMAIndicator(df["Close"], 20).ema_indicator()
     df["ema50"] = ta.trend.EMAIndicator(df["Close"], 50).ema_indicator()
     latest = df.iloc[-1]
-
     if latest["ema20"] > latest["ema50"]:
         return "BULL"
     elif latest["ema20"] < latest["ema50"]:
@@ -107,10 +105,96 @@ def check_entry(row, trend):
 
     return None
 
-# ================= LIVE STRATEGY =================
+# ================= BACKTEST =================
+def backtest():
+
+    capital = START_CAPITAL
+    total = wins = losses = 0
+    gross_profit = gross_loss = 0
+
+    for stock in stocks:
+
+        trend = get_hourly_trend(stock)
+        if not trend:
+            continue
+
+        df = get_data(stock)
+        if df is None or len(df) < 200:
+            continue
+
+        df = add_indicators(df)
+        df = df.tail(45 * 25)
+
+        trades_today = {}
+
+        for i in range(len(df)-10):
+
+            row = df.iloc[i]
+            date_key = row.name.date()
+
+            if trades_today.get((stock, date_key), 0) >= 3:
+                continue
+
+            direction = check_entry(row, trend)
+            if not direction:
+                continue
+
+            price = row["Close"]
+
+            if direction == "BUY":
+                sl = price - 1.2 * row["atr"]
+                target = price + RR_RATIO * (price - sl)
+            else:
+                sl = price + 1.2 * row["atr"]
+                target = price - RR_RATIO * (sl - price)
+
+            risk_amt = capital * RISK_PER_TRADE
+            qty = risk_amt / abs(price - sl)
+
+            future = df.iloc[i+1:i+11]
+            result = None
+
+            for _, f in future.iterrows():
+                if direction == "BUY":
+                    if f["Low"] <= sl:
+                        result = "SL"; break
+                    if f["High"] >= target:
+                        result = "TARGET"; break
+                else:
+                    if f["High"] >= sl:
+                        result = "SL"; break
+                    if f["Low"] <= target:
+                        result = "TARGET"; break
+
+            if result:
+                trades_today[(stock, date_key)] = trades_today.get((stock, date_key), 0) + 1
+                total += 1
+
+                if result == "TARGET":
+                    profit = qty * abs(target - price)
+                    capital += profit
+                    gross_profit += profit
+                    wins += 1
+                else:
+                    loss = qty * abs(price - sl)
+                    capital -= loss
+                    gross_loss += loss
+                    losses += 1
+
+    print("\n===== INSTITUTIONAL INTRADAY RESULTS =====")
+    print("Total Trades:", total)
+    print("Wins:", wins)
+    print("Losses:", losses)
+    if total > 0:
+        print("Win Rate:", round(wins/total*100,2), "%")
+        print("Profit Factor:", round(gross_profit/gross_loss,2))
+    print("Final Capital:", round(capital,2))
+    print("==========================================")
+
+# ================= LIVE =================
 def run_live():
 
-    print("🚀 Institutional Intraday LIVE Running")
+    print("🚀 LIVE MODE STARTED")
 
     trades_today = {}
 
@@ -118,20 +202,15 @@ def run_live():
 
         now = datetime.now(IST)
 
-        # Skip weekends
         if now.weekday() >= 5:
             time.sleep(60)
             continue
 
-        # Only between 10:00 and 14:30
         if not (10 <= now.hour < 14 or (now.hour == 14 and now.minute <= 30)):
             time.sleep(30)
             continue
 
-        # Run exactly at 15m candle close
         if now.minute % 15 == 0 and now.second < 5:
-
-            print("Running 15m scan at", now)
 
             for stock in stocks:
 
@@ -140,34 +219,32 @@ def run_live():
                 if trades_today.get((stock, date_key), 0) >= 3:
                     continue
 
-                try:
-                    trend = get_hourly_trend(stock)
-                    if not trend:
-                        continue
+                trend = get_hourly_trend(stock)
+                if not trend:
+                    continue
 
-                    df = get_data(stock)
-                    if df is None or len(df) < 100:
-                        continue
+                df = get_data(stock)
+                if df is None or len(df) < 100:
+                    continue
 
-                    df = add_indicators(df)
-                    latest = df.iloc[-1]
+                df = add_indicators(df)
+                latest = df.iloc[-1]
 
-                    direction = check_entry(latest, trend)
+                direction = check_entry(latest, trend)
 
-                    if direction:
+                if direction:
 
-                        price = latest["Close"]
+                    price = latest["Close"]
 
-                        if direction == "BUY":
-                            sl = price - 1.2 * latest["atr"]
-                            target = price + RR_RATIO * (price - sl)
-                        else:
-                            sl = price + 1.2 * latest["atr"]
-                            target = price - RR_RATIO * (sl - price)
+                    if direction == "BUY":
+                        sl = price - 1.2 * latest["atr"]
+                        target = price + RR_RATIO * (price - sl)
+                    else:
+                        sl = price + 1.2 * latest["atr"]
+                        target = price - RR_RATIO * (sl - price)
 
-                        message = f"""
+                    message = f"""
 {direction} SIGNAL
-
 Stock: {stock}
 Entry: {round(price,2)}
 SL: {round(sl,2)}
@@ -175,28 +252,18 @@ Target: {round(target,2)}
 RR: 1:{RR_RATIO}
 Trend: {trend}
 """
+                    send_telegram(message)
 
-                        send_telegram(message)
-
-                        trades_today[(stock, date_key)] = trades_today.get((stock, date_key), 0) + 1
-
-                        print("Signal sent:", stock)
-
-                except Exception as e:
-                    print("Live error:", stock, e)
+                    trades_today[(stock, date_key)] = trades_today.get((stock, date_key), 0) + 1
 
             time.sleep(60)
 
         time.sleep(2)
 
-# ================= BACKTEST =================
-def backtest():
-    print("Switch MODE to LIVE to run live signals.")
-
 # ================= ENTRY =================
 if __name__ == "__main__":
 
-    if MODE == "LIVE":
-        run_live()
-    else:
+    if MODE == "BACKTEST":
         backtest()
+    else:
+        run_live()
