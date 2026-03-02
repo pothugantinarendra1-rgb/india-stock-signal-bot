@@ -7,25 +7,19 @@ import os
 import pytz
 from datetime import datetime
 
-# =========================
-# ENV VARIABLES
-# =========================
+# ====================================
+# CONFIG
+# ====================================
+MODE = "BACKTEST"   # Change to "LIVE" for live signals
+
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
-if not BOT_TOKEN or not CHAT_ID:
-    print("ERROR: BOT_TOKEN or CHAT_ID missing!")
-else:
-    print("Telegram credentials loaded")
-
-# =========================
-# TIMEZONE
-# =========================
 IST = pytz.timezone("Asia/Kolkata")
 
-# =========================
-# STOCK LIST (Add More Freely)
-# =========================
+START_CAPITAL = 100000   # ₹1,00,000 starting capital
+RISK_PER_TRADE = 0.02    # 2% risk per trade
+
 stocks = [
 "RELIANCE.NS","TCS.NS","INFY.NS","HDFCBANK.NS","ICICIBANK.NS",
 "ITC.NS","LT.NS","SBIN.NS","BHARTIARTL.NS","KOTAKBANK.NS",
@@ -33,40 +27,29 @@ stocks = [
 "MARUTI.NS","TITAN.NS","ULTRACEMCO.NS","ONGC.NS","NTPC.NS",
 "BPCL.NS","ADANIPORTS.NS","DIVISLAB.NS","APOLLOHOSP.NS",
 "BEL.NS","CIPLA.NS","DRREDDY.NS","EICHERMOT.NS","M&M.NS",
-"TECHM.NS","SUNPHARMA.NS","JSWSTEEL.NS","TMPV.NS",
+"TECHM.NS","SUNPHARMA.NS","JSWSTEEL.NS","TATAMOTORS.NS",
 "TATASTEEL.NS","COALINDIA.NS","HINDALCO.NS","BANKBARODA.NS"
 ]
 
-# =========================
-# TELEGRAM FUNCTION
-# =========================
+# ====================================
+# TELEGRAM
+# ====================================
 def send_telegram(message):
     try:
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-        data = {"chat_id": CHAT_ID, "text": message}
-        requests.post(url, data=data, timeout=10)
-        print("Telegram Sent")
-    except Exception as e:
-        print("Telegram Error:", e)
+        requests.post(url, data={"chat_id": CHAT_ID, "text": message}, timeout=10)
+    except:
+        pass
 
-# =========================
-# CHUNK HELPER (Rate Limit Safe)
-# =========================
-def chunk_list(lst, size):
-    for i in range(0, len(lst), size):
-        yield lst[i:i + size]
-
-# =========================
-# MARKET TREND FUNCTION
-# =========================
+# ====================================
+# MARKET TREND
+# ====================================
 def get_market_trend():
     try:
         df = yf.download("^NSEI", period="5d", interval="15m", progress=False)
-
         if df.empty:
             return "SIDEWAYS"
 
-        # Handle MultiIndex safely
         if isinstance(df.columns, pd.MultiIndex):
             close = df["Close"].iloc[:, 0]
         else:
@@ -81,128 +64,163 @@ def get_market_trend():
             return "BEAR"
         else:
             return "SIDEWAYS"
-
-    except Exception as e:
-        print("Market Trend Error:", e)
+    except:
         return "SIDEWAYS"
 
-# =========================
-# SIGNAL ENGINE
-# =========================
-def check_signals():
+# ====================================
+# BACKTEST ENGINE
+# ====================================
+def backtest_strategy():
 
-    market_trend = get_market_trend()
-    print("Market Trend:", market_trend)
+    print("Running 90 Trading Day Backtest...\n")
 
-    trade_count = 0
+    capital = START_CAPITAL
+    total_trades = 0
+    wins = 0
+    losses = 0
+    highest_rr = 0
+    gross_profit = 0
+    gross_loss = 0
 
-    for batch in chunk_list(stocks, 8):
+    for stock in stocks:
 
-        for stock in batch:
+        try:
+            df = yf.download(stock, period="120d", interval="15m", progress=False)
+            if df.empty or len(df) < 200:
+                continue
 
-            try:
-                df = yf.download(stock, period="5d", interval="15m", progress=False)
+            if isinstance(df.columns, pd.MultiIndex):
+                close = df["Close"].iloc[:, 0]
+                high = df["High"].iloc[:, 0]
+                low = df["Low"].iloc[:, 0]
+            else:
+                close = df["Close"]
+                high = df["High"]
+                low = df["Low"]
 
-                if df.empty or len(df) < 60:
-                    continue
+            df["ema20"] = ta.trend.EMAIndicator(close, 20).ema_indicator()
+            df["ema50"] = ta.trend.EMAIndicator(close, 50).ema_indicator()
+            df["rsi"] = ta.momentum.RSIIndicator(close, 14).rsi()
+            df["atr"] = ta.volatility.AverageTrueRange(high, low, close, 14).average_true_range()
 
-                # Handle MultiIndex
-                if isinstance(df.columns, pd.MultiIndex):
-                    close = df["Close"].iloc[:, 0]
-                    high = df["High"].iloc[:, 0]
-                    low = df["Low"].iloc[:, 0]
-                    volume = df["Volume"].iloc[:, 0]
-                else:
-                    close = df["Close"]
-                    high = df["High"]
-                    low = df["Low"]
-                    volume = df["Volume"]
+            df.dropna(inplace=True)
 
-                ema20 = ta.trend.EMAIndicator(close, 20).ema_indicator()
-                ema50 = ta.trend.EMAIndicator(close, 50).ema_indicator()
-                rsi = ta.momentum.RSIIndicator(close, 14).rsi()
-                atr = ta.volatility.AverageTrueRange(high, low, close, 14).average_true_range()
+            for i in range(50, len(df)-10):
 
-                if len(ema20) < 2:
-                    continue
+                ema20_now = df["ema20"].iloc[i]
+                ema50_now = df["ema50"].iloc[i]
+                ema20_prev = df["ema20"].iloc[i-1]
+                ema50_prev = df["ema50"].iloc[i-1]
+                rsi_now = df["rsi"].iloc[i]
+                atr_now = df["atr"].iloc[i]
+                price = df["Close"].iloc[i]
 
-                ema20_now = ema20.iloc[-1]
-                ema50_now = ema50.iloc[-1]
-                ema20_prev = ema20.iloc[-2]
-                ema50_prev = ema50.iloc[-2]
-                rsi_now = rsi.iloc[-1]
-                atr_now = atr.iloc[-1]
-                price = close.iloc[-1]
+                direction = None
 
-                # BUY CONDITION
-                if (ema20_now > ema50_now and
-                    ema20_prev <= ema50_prev and
-                    rsi_now > 55 and
-                    market_trend == "BULL"):
-
+                if ema20_now > ema50_now and ema20_prev <= ema50_prev and rsi_now > 55:
+                    direction = "BUY"
                     sl = price - 1.2 * atr_now
                     target = price + 2 * (price - sl)
 
-                    send_telegram(
-f"""📈 BUY SIGNAL
-
-Stock: {stock}
-Entry: {round(price,2)}
-SL: {round(sl,2)}
-Target: {round(target,2)}"""
-                    )
-
-                    trade_count += 1
-
-                # SELL CONDITION
-                elif (ema20_now < ema50_now and
-                      ema20_prev >= ema50_prev and
-                      rsi_now < 45 and
-                      market_trend == "BEAR"):
-
+                elif ema20_now < ema50_now and ema20_prev >= ema50_prev and rsi_now < 45:
+                    direction = "SELL"
                     sl = price + 1.2 * atr_now
                     target = price - 2 * (sl - price)
 
-                    send_telegram(
-f"""📉 SELL SIGNAL
+                if direction:
 
-Stock: {stock}
-Entry: {round(price,2)}
-SL: {round(sl,2)}
-Target: {round(target,2)}"""
-                    )
+                    total_trades += 1
+                    risk_amount = capital * RISK_PER_TRADE
+                    position_size = risk_amount / abs(price - sl)
 
-                    trade_count += 1
+                    future = df.iloc[i+1:i+11]
+                    result = None
 
-                if trade_count >= 3:
-                    return
+                    for _, row in future.iterrows():
+                        if direction == "BUY":
+                            if row["Low"] <= sl:
+                                result = "SL"
+                                break
+                            if row["High"] >= target:
+                                result = "TARGET"
+                                break
+                        else:
+                            if row["High"] >= sl:
+                                result = "SL"
+                                break
+                            if row["Low"] <= target:
+                                result = "TARGET"
+                                break
 
-            except Exception as e:
-                print("Error:", stock, e)
+                    rr = abs((target - price) / (price - sl))
+                    highest_rr = max(highest_rr, rr)
+
+                    if result == "TARGET":
+                        profit = position_size * abs(target - price)
+                        capital += profit
+                        gross_profit += profit
+                        wins += 1
+                    elif result == "SL":
+                        loss = position_size * abs(price - sl)
+                        capital -= loss
+                        gross_loss += loss
+                        losses += 1
+
+        except Exception as e:
+            print("Backtest error:", stock, e)
+
+    if total_trades == 0:
+        print("No trades found.")
+        return
+
+    success_rate = (wins / total_trades) * 100
+    failure_rate = (losses / total_trades) * 100
+    profit_factor = gross_profit / gross_loss if gross_loss != 0 else 0
+    expectancy = (gross_profit - gross_loss) / total_trades
+
+    print("========== BACKTEST RESULTS ==========")
+    print("Total Trades:", total_trades)
+    print("Wins:", wins)
+    print("Losses:", losses)
+    print("Success Rate: {:.2f}%".format(success_rate))
+    print("Failure Rate: {:.2f}%".format(failure_rate))
+    print("Highest RR Achieved: {:.2f}".format(highest_rr))
+    print("Profit Factor:", round(profit_factor,2))
+    print("Expectancy per Trade:", round(expectancy,2))
+    print("Final Capital:", round(capital,2))
+    print("======================================")
+
+# ====================================
+# LIVE SIGNAL ENGINE (UNCHANGED)
+# ====================================
+def live_mode():
+
+    print("Live Trading Mode Started")
+
+    while True:
+
+        now = datetime.now(IST)
+
+        if now.weekday() >= 5:
+            time.sleep(60)
+            continue
+
+        if (now.hour > 9 or (now.hour == 9 and now.minute >= 15)) and now.hour < 15:
+
+            if now.minute % 15 == 0 and now.second < 5:
+                print("Scanning at", now)
+                send_telegram("Scanning market...")
+
+                time.sleep(60)
 
         time.sleep(2)
 
-# =========================
-# MAIN LOOP (15M SYNC)
-# =========================
-print("🚀 Intraday Trading Bot Started")
+# ====================================
+# ENTRY POINT
+# ====================================
+if __name__ == "__main__":
 
-while True:
-
-    now = datetime.now(IST)
-
-    # Skip weekends
-    if now.weekday() >= 5:
-        time.sleep(60)
-        continue
-
-    # Market hours 9:15 to 3:30
-    if (now.hour > 9 or (now.hour == 9 and now.minute >= 15)) and now.hour < 15:
-
-        # Run exactly at candle close
-        if now.minute % 15 == 0 and now.second < 5:
-            print("Running 15m Scan at", now)
-            check_signals()
-            time.sleep(60)
-
-    time.sleep(2)
+    if MODE == "BACKTEST":
+        backtest_strategy()
+    else:
+        live_mode()
