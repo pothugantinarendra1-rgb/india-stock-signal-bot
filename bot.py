@@ -7,14 +7,12 @@ import os
 import pytz
 from datetime import datetime
 
-# =========================
-# CONFIG
-# =========================
-MODE = "BACKTEST"  # "LIVE" or "BACKTEST"
+# ================= CONFIG =================
+MODE = "LIVE"   # "LIVE" or "BACKTEST"
 
 START_CAPITAL = 100000
 RISK_PER_TRADE = 0.02
-RR_RATIO = 2.5
+RR_RATIO = 2.2
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
@@ -26,9 +24,7 @@ stocks = [
 "ITC.NS","LT.NS","SBIN.NS","BHARTIARTL.NS","KOTAKBANK.NS"
 ]
 
-# =========================
-# TELEGRAM
-# =========================
+# ================= TELEGRAM =================
 def send_telegram(msg):
     if BOT_TOKEN and CHAT_ID:
         try:
@@ -37,20 +33,16 @@ def send_telegram(msg):
         except:
             pass
 
-# =========================
-# SAFE DOWNLOAD
-# =========================
-def download_data(symbol):
+# ================= DATA =================
+def get_data(symbol):
     df = yf.download(symbol, period="60d", interval="15m", progress=False)
     if df.empty:
         return None
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
-    return df
+    return df[["Open","High","Low","Close","Volume"]]
 
-# =========================
-# ADD INDICATORS
-# =========================
+# ================= INDICATORS =================
 def add_indicators(df):
 
     df["ema20"] = ta.trend.EMAIndicator(df["Close"], 20).ema_indicator()
@@ -63,71 +55,104 @@ def add_indicators(df):
         df["High"], df["Low"], df["Close"], 14
     ).adx()
     df["vol_avg"] = df["Volume"].rolling(20).mean()
-    df["hh20"] = df["High"].rolling(20).max()
-    df["ll20"] = df["Low"].rolling(20).min()
+
+    # 🔥 Correct breakout logic
+    df["hh20"] = df["High"].rolling(20).max().shift(1)
+    df["ll20"] = df["Low"].rolling(20).min().shift(1)
 
     df.dropna(inplace=True)
     return df
 
-# =========================
-# LIVE STRATEGY
-# =========================
+# ================= ENTRY LOGIC =================
+def check_entry(row):
+
+    # BUY
+    if (
+        row["ema20"] > row["ema50"]
+        and row["adx"] > 20
+        and row["Close"] > row["hh20"]
+        and row["rsi"] > 55
+        and row["Volume"] > 1.2 * row["vol_avg"]
+    ):
+        return "BUY"
+
+    # SELL
+    if (
+        row["ema20"] < row["ema50"]
+        and row["adx"] > 20
+        and row["Close"] < row["ll20"]
+        and row["rsi"] < 45
+        and row["Volume"] > 1.2 * row["vol_avg"]
+    ):
+        return "SELL"
+
+    return None
+
+# ================= LIVE STRATEGY =================
 def run_live():
 
-    print("Professional Live Strategy Running")
+    print("Balanced Professional LIVE Strategy Running")
 
     while True:
 
         now = datetime.now(IST)
 
+        # Skip weekends
         if now.weekday() >= 5:
             time.sleep(60)
             continue
 
-        if now.minute % 15 == 0 and now.second < 5:
+        # Market hours 9:15 to 3:30
+        if (now.hour > 9 or (now.hour == 9 and now.minute >= 15)) and now.hour < 15:
 
-            for stock in stocks:
+            # Run exactly at 15m candle close
+            if now.minute % 15 == 0 and now.second < 5:
 
-                try:
-                    df = download_data(stock)
-                    if df is None or len(df) < 100:
-                        continue
+                print("Running 15m scan at", now)
 
-                    df = add_indicators(df)
+                for stock in stocks:
 
-                    latest = df.iloc[-1]
+                    try:
+                        df = get_data(stock)
+                        if df is None or len(df) < 100:
+                            continue
 
-                    # BUY
-                    if (
-                        latest["ema20"] > latest["ema50"]
-                        and latest["adx"] > 25
-                        and latest["Close"] > latest["hh20"]
-                        and latest["rsi"] > 60
-                        and latest["Volume"] > 1.5 * latest["vol_avg"]
-                    ):
+                        df = add_indicators(df)
 
-                        sl = latest["Close"] - 1.2 * latest["atr"]
-                        target = latest["Close"] + RR_RATIO * (latest["Close"] - sl)
+                        latest = df.iloc[-1]
+                        direction = check_entry(latest)
 
-                        send_telegram(f"""
-BUY SIGNAL
+                        if direction:
+
+                            price = latest["Close"]
+
+                            if direction == "BUY":
+                                sl = price - 1.2 * latest["atr"]
+                                target = price + RR_RATIO * (price - sl)
+                            else:
+                                sl = price + 1.2 * latest["atr"]
+                                target = price - RR_RATIO * (sl - price)
+
+                            message = f"""
+{direction} SIGNAL
+
 Stock: {stock}
-Entry: {round(latest['Close'],2)}
+Entry: {round(price,2)}
 SL: {round(sl,2)}
 Target: {round(target,2)}
 RR: 1:{RR_RATIO}
-""")
+"""
+                            send_telegram(message)
+                            print("Signal sent:", stock)
 
-                except Exception as e:
-                    print("Live Error:", stock, e)
+                    except Exception as e:
+                        print("Live error:", stock, e)
 
-            time.sleep(60)
+                time.sleep(60)
 
         time.sleep(2)
 
-# =========================
-# BACKTEST
-# =========================
+# ================= BACKTEST =================
 def backtest():
 
     capital = START_CAPITAL
@@ -136,75 +161,79 @@ def backtest():
 
     for stock in stocks:
 
-        df = download_data(stock)
+        df = get_data(stock)
         if df is None or len(df) < 200:
             continue
 
         df = add_indicators(df)
         df = df.tail(45 * 25)
 
-        for i in range(50, len(df)-10):
+        for i in range(len(df)-10):
 
             row = df.iloc[i]
+            direction = check_entry(row)
 
-            if (
-                row["ema20"] > row["ema50"]
-                and row["adx"] > 25
-                and row["Close"] > row["hh20"]
-                and row["rsi"] > 60
-                and row["Volume"] > 1.5 * row["vol_avg"]
-            ):
+            if not direction:
+                continue
 
-                price = row["Close"]
+            price = row["Close"]
+
+            if direction == "BUY":
                 sl = price - 1.2 * row["atr"]
                 target = price + RR_RATIO * (price - sl)
+            else:
+                sl = price + 1.2 * row["atr"]
+                target = price - RR_RATIO * (sl - price)
 
-                risk_amt = capital * RISK_PER_TRADE
-                qty = risk_amt / abs(price - sl)
+            total += 1
 
-                future = df.iloc[i+1:i+11]
-                result = None
+            risk_amt = capital * RISK_PER_TRADE
+            qty = risk_amt / abs(price - sl)
 
-                for _, f in future.iterrows():
+            future = df.iloc[i+1:i+11]
+            result = None
+
+            for _, f in future.iterrows():
+
+                if direction == "BUY":
                     if f["Low"] <= sl:
-                        result = "SL"
-                        break
+                        result = "SL"; break
                     if f["High"] >= target:
-                        result = "TARGET"
-                        break
+                        result = "TARGET"; break
+                else:
+                    if f["High"] >= sl:
+                        result = "SL"; break
+                    if f["Low"] <= target:
+                        result = "TARGET"; break
 
-                total += 1
-
-                if result == "TARGET":
-                    profit = qty * abs(target - price)
-                    capital += profit
-                    gross_profit += profit
-                    wins += 1
-                elif result == "SL":
-                    loss = qty * abs(price - sl)
-                    capital -= loss
-                    gross_loss += loss
-                    losses += 1
+            if result == "TARGET":
+                profit = qty * abs(target - price)
+                capital += profit
+                gross_profit += profit
+                wins += 1
+            elif result == "SL":
+                loss = qty * abs(price - sl)
+                capital -= loss
+                gross_loss += loss
+                losses += 1
 
     if total == 0:
         print("No trades found")
         return
 
-    print("\n===== PROFESSIONAL BACKTEST RESULTS =====")
+    print("\n====== BALANCED PROFESSIONAL RESULTS ======")
     print("Total Trades:", total)
     print("Wins:", wins)
     print("Losses:", losses)
-    print("Win Rate:", round((wins/total)*100,2), "%")
+    print("Win Rate:", round(wins/total*100,2), "%")
     print("Profit Factor:", round(gross_profit/gross_loss,2))
     print("Final Capital:", round(capital,2))
-    print("=========================================")
+    print("==========================================")
 
-# =========================
-# ENTRY POINT
-# =========================
+# ================= ENTRY POINT =================
 if __name__ == "__main__":
 
-    if MODE == "LIVE":
-        run_live()
-    else:
+    if MODE == "BACKTEST":
         backtest()
+    else:
+        run_live()
