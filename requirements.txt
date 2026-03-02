@@ -2,5 +2,4 @@ yfinance
 pandas
 ta
 requests
-schedule
 pytz
