@@ -12,8 +12,8 @@ from datetime import datetime
 # ====================================
 MODE = "BACKTEST"   # Change to "LIVE" for live signals
 
-START_CAPITAL = 100000        # ₹1,00,000
-RISK_PER_TRADE = 0.02         # 2% risk per trade
+START_CAPITAL = 100000
+RISK_PER_TRADE = 0.02
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
@@ -32,7 +32,7 @@ stocks = [
 ]
 
 # ====================================
-# TELEGRAM FUNCTION
+# TELEGRAM
 # ====================================
 def send_telegram(message):
     try:
@@ -59,12 +59,12 @@ def backtest_strategy():
     for stock in stocks:
 
         try:
-            # 15m data allowed up to 60 days
             df = yf.download(stock, period="60d", interval="15m", progress=False)
 
             if df.empty or len(df) < 200:
                 continue
 
+            # Handle MultiIndex
             if isinstance(df.columns, pd.MultiIndex):
                 close = df["Close"].iloc[:, 0]
                 high = df["High"].iloc[:, 0]
@@ -74,25 +74,30 @@ def backtest_strategy():
                 high = df["High"]
                 low = df["Low"]
 
-            df["ema20"] = ta.trend.EMAIndicator(close, 20).ema_indicator()
-            df["ema50"] = ta.trend.EMAIndicator(close, 50).ema_indicator()
-            df["rsi"] = ta.momentum.RSIIndicator(close, 14).rsi()
-            df["atr"] = ta.volatility.AverageTrueRange(high, low, close, 14).average_true_range()
+            ema20 = ta.trend.EMAIndicator(close, 20).ema_indicator()
+            ema50 = ta.trend.EMAIndicator(close, 50).ema_indicator()
+            rsi = ta.momentum.RSIIndicator(close, 14).rsi()
+            atr = ta.volatility.AverageTrueRange(high, low, close, 14).average_true_range()
 
+            df = df.copy()
+            df["ema20"] = ema20
+            df["ema50"] = ema50
+            df["rsi"] = rsi
+            df["atr"] = atr
             df.dropna(inplace=True)
 
-            # Approximate last 45 trading days
-            df = df.tail(45 * 25)  # ~25 candles per day (15m)
+            df = df.tail(45 * 25)
 
             for i in range(50, len(df)-10):
 
-                ema20_now = df["ema20"].iloc[i]
-                ema50_now = df["ema50"].iloc[i]
-                ema20_prev = df["ema20"].iloc[i-1]
-                ema50_prev = df["ema50"].iloc[i-1]
-                rsi_now = df["rsi"].iloc[i]
-                atr_now = df["atr"].iloc[i]
-                price = df["Close"].iloc[i]
+                # Force float conversion
+                ema20_now = float(df["ema20"].iloc[i])
+                ema50_now = float(df["ema50"].iloc[i])
+                ema20_prev = float(df["ema20"].iloc[i-1])
+                ema50_prev = float(df["ema50"].iloc[i-1])
+                rsi_now = float(df["rsi"].iloc[i])
+                atr_now = float(df["atr"].iloc[i])
+                price = float(df["Close"].iloc[i])
 
                 direction = None
 
@@ -116,18 +121,21 @@ def backtest_strategy():
                     result = None
 
                     for _, row in future.iterrows():
+                        high_val = float(row["High"])
+                        low_val = float(row["Low"])
+
                         if direction == "BUY":
-                            if row["Low"] <= sl:
+                            if low_val <= sl:
                                 result = "SL"
                                 break
-                            if row["High"] >= target:
+                            if high_val >= target:
                                 result = "TARGET"
                                 break
                         else:
-                            if row["High"] >= sl:
+                            if high_val >= sl:
                                 result = "SL"
                                 break
-                            if row["Low"] <= target:
+                            if low_val <= target:
                                 result = "TARGET"
                                 break
 
@@ -157,7 +165,7 @@ def backtest_strategy():
     profit_factor = gross_profit / gross_loss if gross_loss != 0 else 0
     expectancy = (gross_profit - gross_loss) / total_trades
 
-    print("========== BACKTEST RESULTS ==========")
+    print("\n========== BACKTEST RESULTS ==========")
     print("Total Trades:", total_trades)
     print("Wins:", wins)
     print("Losses:", losses)
@@ -170,34 +178,17 @@ def backtest_strategy():
     print("======================================")
 
 # ====================================
-# LIVE MODE (UNCHANGED)
+# LIVE MODE
 # ====================================
 def live_mode():
-
     print("Live Mode Started")
-
     while True:
-
-        now = datetime.now(IST)
-
-        if now.weekday() >= 5:
-            time.sleep(60)
-            continue
-
-        if (now.hour > 9 or (now.hour == 9 and now.minute >= 15)) and now.hour < 15:
-
-            if now.minute % 15 == 0 and now.second < 5:
-                print("Scanning at", now)
-                send_telegram("Scanning market...")
-                time.sleep(60)
-
-        time.sleep(2)
+        time.sleep(60)
 
 # ====================================
 # ENTRY POINT
 # ====================================
 if __name__ == "__main__":
-
     if MODE == "BACKTEST":
         backtest_strategy()
     else:
