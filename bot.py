@@ -8,7 +8,7 @@ import pytz
 from datetime import datetime
 
 # ================= CONFIG =================
-MODE = "LIVE"   # "LIVE" or "BACKTEST"
+MODE = "BACKTEST"   # "LIVE" or "BACKTEST"
 
 START_CAPITAL = 100000
 RISK_PER_TRADE = 0.02
@@ -33,7 +33,7 @@ def send_telegram(msg):
         except:
             pass
 
-# ================= DATA =================
+# ================= DATA DOWNLOAD =================
 def get_data(symbol):
     df = yf.download(symbol, period="60d", interval="15m", progress=False)
     if df.empty:
@@ -56,9 +56,9 @@ def add_indicators(df):
     ).adx()
     df["vol_avg"] = df["Volume"].rolling(20).mean()
 
-    # 🔥 Correct breakout logic
-    df["hh20"] = df["High"].rolling(20).max().shift(1)
-    df["ll20"] = df["Low"].rolling(20).min().shift(1)
+    # 🔥 Relaxed breakout (10 candle lookback)
+    df["hh10"] = df["High"].rolling(10).max().shift(1)
+    df["ll10"] = df["Low"].rolling(10).min().shift(1)
 
     df.dropna(inplace=True)
     return df
@@ -69,20 +69,20 @@ def check_entry(row):
     # BUY
     if (
         row["ema20"] > row["ema50"]
-        and row["adx"] > 20
-        and row["Close"] > row["hh20"]
-        and row["rsi"] > 55
-        and row["Volume"] > 1.2 * row["vol_avg"]
+        and row["adx"] > 18
+        and row["Close"] > row["hh10"]
+        and row["rsi"] > 52
+        and row["Volume"] > row["vol_avg"]
     ):
         return "BUY"
 
     # SELL
     if (
         row["ema20"] < row["ema50"]
-        and row["adx"] > 20
-        and row["Close"] < row["ll20"]
-        and row["rsi"] < 45
-        and row["Volume"] > 1.2 * row["vol_avg"]
+        and row["adx"] > 18
+        and row["Close"] < row["ll10"]
+        and row["rsi"] < 48
+        and row["Volume"] > row["vol_avg"]
     ):
         return "SELL"
 
@@ -105,7 +105,7 @@ def run_live():
         # Market hours 9:15 to 3:30
         if (now.hour > 9 or (now.hour == 9 and now.minute >= 15)) and now.hour < 15:
 
-            # Run exactly at 15m candle close
+            # Run exactly at 15m close
             if now.minute % 15 == 0 and now.second < 5:
 
                 print("Running 15m scan at", now)
@@ -118,8 +118,8 @@ def run_live():
                             continue
 
                         df = add_indicators(df)
-
                         latest = df.iloc[-1]
+
                         direction = check_entry(latest)
 
                         if direction:
@@ -218,7 +218,7 @@ def backtest():
                 losses += 1
 
     if total == 0:
-        print("No trades found")
+        print("No trades found — logic still too strict")
         return
 
     print("\n====== BALANCED PROFESSIONAL RESULTS ======")
