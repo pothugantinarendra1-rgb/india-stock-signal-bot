@@ -32,14 +32,35 @@ stocks = [
 ]
 
 # ====================================
-# TELEGRAM
+# TELEGRAM FUNCTION
 # ====================================
 def send_telegram(message):
     try:
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-        requests.post(url, data={"chat_id": CHAT_ID, "text": message}, timeout=10)
+        if BOT_TOKEN and CHAT_ID:
+            url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+            requests.post(url, data={"chat_id": CHAT_ID, "text": message}, timeout=10)
     except:
         pass
+
+# ====================================
+# SAFE DATA DOWNLOAD
+# ====================================
+def download_data(symbol):
+    df = yf.download(symbol, period="60d", interval="15m", progress=False)
+
+    if df.empty:
+        return None
+
+    # 🔥 Flatten MultiIndex immediately
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+
+    required_cols = ["Open", "High", "Low", "Close", "Volume"]
+
+    if not all(col in df.columns for col in required_cols):
+        return None
+
+    return df[required_cols].copy()
 
 # ====================================
 # BACKTEST ENGINE (45 DAYS, 15M)
@@ -59,54 +80,51 @@ def backtest_strategy():
     for stock in stocks:
 
         try:
-            df = yf.download(stock, period="60d", interval="15m", progress=False)
-
-            if df.empty or len(df) < 200:
+            df = download_data(stock)
+            if df is None or len(df) < 200:
                 continue
 
-            # Handle MultiIndex
-            if isinstance(df.columns, pd.MultiIndex):
-                close = df["Close"].iloc[:, 0]
-                high = df["High"].iloc[:, 0]
-                low = df["Low"].iloc[:, 0]
-            else:
-                close = df["Close"]
-                high = df["High"]
-                low = df["Low"]
+            # Indicators
+            df["ema20"] = ta.trend.EMAIndicator(df["Close"], 20).ema_indicator()
+            df["ema50"] = ta.trend.EMAIndicator(df["Close"], 50).ema_indicator()
+            df["rsi"] = ta.momentum.RSIIndicator(df["Close"], 14).rsi()
+            df["atr"] = ta.volatility.AverageTrueRange(
+                df["High"], df["Low"], df["Close"], 14
+            ).average_true_range()
 
-            ema20 = ta.trend.EMAIndicator(close, 20).ema_indicator()
-            ema50 = ta.trend.EMAIndicator(close, 50).ema_indicator()
-            rsi = ta.momentum.RSIIndicator(close, 14).rsi()
-            atr = ta.volatility.AverageTrueRange(high, low, close, 14).average_true_range()
-
-            df = df.copy()
-            df["ema20"] = ema20
-            df["ema50"] = ema50
-            df["rsi"] = rsi
-            df["atr"] = atr
             df.dropna(inplace=True)
 
+            # Last ~45 trading days (~25 candles/day)
             df = df.tail(45 * 25)
 
-            for i in range(50, len(df)-10):
+            for i in range(50, len(df) - 10):
 
-                # Force float conversion
-                ema20_now = float(df["ema20"].iloc[i])
-                ema50_now = float(df["ema50"].iloc[i])
-                ema20_prev = float(df["ema20"].iloc[i-1])
-                ema50_prev = float(df["ema50"].iloc[i-1])
-                rsi_now = float(df["rsi"].iloc[i])
-                atr_now = float(df["atr"].iloc[i])
-                price = float(df["Close"].iloc[i])
+                ema20_now = df["ema20"].iloc[i]
+                ema50_now = df["ema50"].iloc[i]
+                ema20_prev = df["ema20"].iloc[i - 1]
+                ema50_prev = df["ema50"].iloc[i - 1]
+                rsi_now = df["rsi"].iloc[i]
+                atr_now = df["atr"].iloc[i]
+                price = df["Close"].iloc[i]
 
                 direction = None
 
-                if ema20_now > ema50_now and ema20_prev <= ema50_prev and rsi_now > 55:
+                # BUY condition
+                if (
+                    ema20_now > ema50_now
+                    and ema20_prev <= ema50_prev
+                    and rsi_now > 55
+                ):
                     direction = "BUY"
                     sl = price - 1.2 * atr_now
                     target = price + 2 * (price - sl)
 
-                elif ema20_now < ema50_now and ema20_prev >= ema50_prev and rsi_now < 45:
+                # SELL condition
+                elif (
+                    ema20_now < ema50_now
+                    and ema20_prev >= ema50_prev
+                    and rsi_now < 45
+                ):
                     direction = "SELL"
                     sl = price + 1.2 * atr_now
                     target = price - 2 * (sl - price)
@@ -117,25 +135,23 @@ def backtest_strategy():
                     risk_amount = capital * RISK_PER_TRADE
                     position_size = risk_amount / abs(price - sl)
 
-                    future = df.iloc[i+1:i+11]
+                    future = df.iloc[i + 1 : i + 11]
                     result = None
 
                     for _, row in future.iterrows():
-                        high_val = float(row["High"])
-                        low_val = float(row["Low"])
 
                         if direction == "BUY":
-                            if low_val <= sl:
+                            if row["Low"] <= sl:
                                 result = "SL"
                                 break
-                            if high_val >= target:
+                            if row["High"] >= target:
                                 result = "TARGET"
                                 break
                         else:
-                            if high_val >= sl:
+                            if row["High"] >= sl:
                                 result = "SL"
                                 break
-                            if low_val <= target:
+                            if row["Low"] <= target:
                                 result = "TARGET"
                                 break
 
@@ -172,13 +188,13 @@ def backtest_strategy():
     print("Success Rate: {:.2f}%".format(success_rate))
     print("Failure Rate: {:.2f}%".format(failure_rate))
     print("Highest RR Achieved: {:.2f}".format(highest_rr))
-    print("Profit Factor:", round(profit_factor,2))
-    print("Expectancy per Trade:", round(expectancy,2))
-    print("Final Capital:", round(capital,2))
+    print("Profit Factor:", round(profit_factor, 2))
+    print("Expectancy per Trade:", round(expectancy, 2))
+    print("Final Capital:", round(capital, 2))
     print("======================================")
 
 # ====================================
-# LIVE MODE
+# LIVE MODE (Basic placeholder)
 # ====================================
 def live_mode():
     print("Live Mode Started")
