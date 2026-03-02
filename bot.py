@@ -8,17 +8,17 @@ import pytz
 from datetime import datetime
 
 # ====================================
-# CONFIG
+# CONFIGURATION
 # ====================================
 MODE = "BACKTEST"   # Change to "LIVE" for live signals
+
+START_CAPITAL = 100000        # ₹1,00,000
+RISK_PER_TRADE = 0.02         # 2% risk per trade
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
 IST = pytz.timezone("Asia/Kolkata")
-
-START_CAPITAL = 100000   # ₹1,00,000 starting capital
-RISK_PER_TRADE = 0.02    # 2% risk per trade
 
 stocks = [
 "RELIANCE.NS","TCS.NS","INFY.NS","HDFCBANK.NS","ICICIBANK.NS",
@@ -32,7 +32,7 @@ stocks = [
 ]
 
 # ====================================
-# TELEGRAM
+# TELEGRAM FUNCTION
 # ====================================
 def send_telegram(message):
     try:
@@ -42,37 +42,11 @@ def send_telegram(message):
         pass
 
 # ====================================
-# MARKET TREND
-# ====================================
-def get_market_trend():
-    try:
-        df = yf.download("^NSEI", period="5d", interval="15m", progress=False)
-        if df.empty:
-            return "SIDEWAYS"
-
-        if isinstance(df.columns, pd.MultiIndex):
-            close = df["Close"].iloc[:, 0]
-        else:
-            close = df["Close"]
-
-        ema20 = ta.trend.EMAIndicator(close, 20).ema_indicator()
-        ema50 = ta.trend.EMAIndicator(close, 50).ema_indicator()
-
-        if ema20.iloc[-1] > ema50.iloc[-1]:
-            return "BULL"
-        elif ema20.iloc[-1] < ema50.iloc[-1]:
-            return "BEAR"
-        else:
-            return "SIDEWAYS"
-    except:
-        return "SIDEWAYS"
-
-# ====================================
-# BACKTEST ENGINE
+# BACKTEST ENGINE (45 DAYS, 15M)
 # ====================================
 def backtest_strategy():
 
-    print("Running 90 Trading Day Backtest...\n")
+    print("Running 45 Trading Day Backtest (15m candles)...\n")
 
     capital = START_CAPITAL
     total_trades = 0
@@ -85,7 +59,9 @@ def backtest_strategy():
     for stock in stocks:
 
         try:
-            df = yf.download(stock, period="120d", interval="15m", progress=False)
+            # 15m data allowed up to 60 days
+            df = yf.download(stock, period="60d", interval="15m", progress=False)
+
             if df.empty or len(df) < 200:
                 continue
 
@@ -104,6 +80,9 @@ def backtest_strategy():
             df["atr"] = ta.volatility.AverageTrueRange(high, low, close, 14).average_true_range()
 
             df.dropna(inplace=True)
+
+            # Approximate last 45 trading days
+            df = df.tail(45 * 25)  # ~25 candles per day (15m)
 
             for i in range(50, len(df)-10):
 
@@ -191,11 +170,11 @@ def backtest_strategy():
     print("======================================")
 
 # ====================================
-# LIVE SIGNAL ENGINE (UNCHANGED)
+# LIVE MODE (UNCHANGED)
 # ====================================
 def live_mode():
 
-    print("Live Trading Mode Started")
+    print("Live Mode Started")
 
     while True:
 
@@ -210,7 +189,6 @@ def live_mode():
             if now.minute % 15 == 0 and now.second < 5:
                 print("Scanning at", now)
                 send_telegram("Scanning market...")
-
                 time.sleep(60)
 
         time.sleep(2)
