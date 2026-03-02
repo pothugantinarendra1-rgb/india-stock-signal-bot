@@ -8,11 +8,11 @@ import pytz
 from datetime import datetime
 
 # ================= CONFIG =================
-MODE = "BACKTEST"   # "LIVE" or "BACKTEST"
+MODE = "BACKTEST"  # "LIVE" or "BACKTEST"
 
 START_CAPITAL = 100000
-RISK_PER_TRADE = 0.02
-RR_RATIO = 2.2
+RISK_PER_TRADE = 0.015
+RR_RATIO = 2
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
@@ -20,8 +20,15 @@ CHAT_ID = os.getenv("CHAT_ID")
 IST = pytz.timezone("Asia/Kolkata")
 
 stocks = [
+# Large Caps
 "RELIANCE.NS","TCS.NS","INFY.NS","HDFCBANK.NS","ICICIBANK.NS",
-"ITC.NS","LT.NS","SBIN.NS","BHARTIARTL.NS","KOTAKBANK.NS"
+"ITC.NS","LT.NS","SBIN.NS","BHARTIARTL.NS","KOTAKBANK.NS",
+"AXISBANK.NS","HCLTECH.NS","ASIANPAINT.NS","MARUTI.NS","TITAN.NS",
+
+# Mid Caps
+"TATAMOTORS.NS","ADANIPORTS.NS","COALINDIA.NS","HINDALCO.NS",
+"JSWSTEEL.NS","SUNPHARMA.NS","DIVISLAB.NS","PIDILITIND.NS",
+"DABUR.NS","AMBUJACEM.NS"
 ]
 
 # ================= TELEGRAM =================
@@ -33,9 +40,9 @@ def send_telegram(msg):
         except:
             pass
 
-# ================= DATA DOWNLOAD =================
-def get_data(symbol):
-    df = yf.download(symbol, period="60d", interval="15m", progress=False)
+# ================= DATA =================
+def get_data(symbol, interval="15m"):
+    df = yf.download(symbol, period="60d", interval=interval, progress=False)
     if df.empty:
         return None
     if isinstance(df.columns, pd.MultiIndex):
@@ -44,7 +51,6 @@ def get_data(symbol):
 
 # ================= INDICATORS =================
 def add_indicators(df):
-
     df["ema20"] = ta.trend.EMAIndicator(df["Close"], 20).ema_indicator()
     df["ema50"] = ta.trend.EMAIndicator(df["Close"], 50).ema_indicator()
     df["rsi"] = ta.momentum.RSIIndicator(df["Close"], 14).rsi()
@@ -56,21 +62,40 @@ def add_indicators(df):
     ).adx()
     df["vol_avg"] = df["Volume"].rolling(20).mean()
 
-    # 🔥 Relaxed breakout (10 candle lookback)
     df["hh10"] = df["High"].rolling(10).max().shift(1)
     df["ll10"] = df["Low"].rolling(10).min().shift(1)
 
     df.dropna(inplace=True)
     return df
 
+# ================= TREND FILTER =================
+def get_hourly_trend(symbol):
+
+    df = get_data(symbol, interval="60m")
+    if df is None or len(df) < 60:
+        return None
+
+    df["ema20"] = ta.trend.EMAIndicator(df["Close"], 20).ema_indicator()
+    df["ema50"] = ta.trend.EMAIndicator(df["Close"], 50).ema_indicator()
+
+    latest = df.iloc[-1]
+
+    if latest["ema20"] > latest["ema50"]:
+        return "BULL"
+    elif latest["ema20"] < latest["ema50"]:
+        return "BEAR"
+    else:
+        return None
+
 # ================= ENTRY LOGIC =================
-def check_entry(row):
+def check_entry(row, trend):
 
     # BUY
     if (
-        row["ema20"] > row["ema50"]
-        and row["adx"] > 18
+        trend == "BULL"
+        and row["ema20"] > row["ema50"]
         and row["Close"] > row["hh10"]
+        and row["adx"] > 18
         and row["rsi"] > 52
         and row["Volume"] > row["vol_avg"]
     ):
@@ -78,79 +103,16 @@ def check_entry(row):
 
     # SELL
     if (
-        row["ema20"] < row["ema50"]
-        and row["adx"] > 18
+        trend == "BEAR"
+        and row["ema20"] < row["ema50"]
         and row["Close"] < row["ll10"]
+        and row["adx"] > 18
         and row["rsi"] < 48
         and row["Volume"] > row["vol_avg"]
     ):
         return "SELL"
 
     return None
-
-# ================= LIVE STRATEGY =================
-def run_live():
-
-    print("Balanced Professional LIVE Strategy Running")
-
-    while True:
-
-        now = datetime.now(IST)
-
-        # Skip weekends
-        if now.weekday() >= 5:
-            time.sleep(60)
-            continue
-
-        # Market hours 9:15 to 3:30
-        if (now.hour > 9 or (now.hour == 9 and now.minute >= 15)) and now.hour < 15:
-
-            # Run exactly at 15m close
-            if now.minute % 15 == 0 and now.second < 5:
-
-                print("Running 15m scan at", now)
-
-                for stock in stocks:
-
-                    try:
-                        df = get_data(stock)
-                        if df is None or len(df) < 100:
-                            continue
-
-                        df = add_indicators(df)
-                        latest = df.iloc[-1]
-
-                        direction = check_entry(latest)
-
-                        if direction:
-
-                            price = latest["Close"]
-
-                            if direction == "BUY":
-                                sl = price - 1.2 * latest["atr"]
-                                target = price + RR_RATIO * (price - sl)
-                            else:
-                                sl = price + 1.2 * latest["atr"]
-                                target = price - RR_RATIO * (sl - price)
-
-                            message = f"""
-{direction} SIGNAL
-
-Stock: {stock}
-Entry: {round(price,2)}
-SL: {round(sl,2)}
-Target: {round(target,2)}
-RR: 1:{RR_RATIO}
-"""
-                            send_telegram(message)
-                            print("Signal sent:", stock)
-
-                    except Exception as e:
-                        print("Live error:", stock, e)
-
-                time.sleep(60)
-
-        time.sleep(2)
 
 # ================= BACKTEST =================
 def backtest():
@@ -161,6 +123,10 @@ def backtest():
 
     for stock in stocks:
 
+        trend = get_hourly_trend(stock)
+        if not trend:
+            continue
+
         df = get_data(stock)
         if df is None or len(df) < 200:
             continue
@@ -168,11 +134,17 @@ def backtest():
         df = add_indicators(df)
         df = df.tail(45 * 25)
 
+        trades_today = {}
+
         for i in range(len(df)-10):
 
             row = df.iloc[i]
-            direction = check_entry(row)
+            date_key = row.name.date()
 
+            if trades_today.get(date_key, 0) >= 3:
+                continue
+
+            direction = check_entry(row, trend)
             if not direction:
                 continue
 
@@ -184,8 +156,6 @@ def backtest():
             else:
                 sl = price + 1.2 * row["atr"]
                 target = price - RR_RATIO * (sl - price)
-
-            total += 1
 
             risk_amt = capital * RISK_PER_TRADE
             qty = risk_amt / abs(price - sl)
@@ -206,34 +176,35 @@ def backtest():
                     if f["Low"] <= target:
                         result = "TARGET"; break
 
-            if result == "TARGET":
-                profit = qty * abs(target - price)
-                capital += profit
-                gross_profit += profit
-                wins += 1
-            elif result == "SL":
-                loss = qty * abs(price - sl)
-                capital -= loss
-                gross_loss += loss
-                losses += 1
+            if result:
+                trades_today[date_key] = trades_today.get(date_key, 0) + 1
+                total += 1
 
-    if total == 0:
-        print("No trades found — logic still too strict")
-        return
+                if result == "TARGET":
+                    profit = qty * abs(target - price)
+                    capital += profit
+                    gross_profit += profit
+                    wins += 1
+                else:
+                    loss = qty * abs(price - sl)
+                    capital -= loss
+                    gross_loss += loss
+                    losses += 1
 
-    print("\n====== BALANCED PROFESSIONAL RESULTS ======")
+    print("\n===== INSTITUTIONAL INTRADAY RESULTS =====")
     print("Total Trades:", total)
     print("Wins:", wins)
     print("Losses:", losses)
-    print("Win Rate:", round(wins/total*100,2), "%")
-    print("Profit Factor:", round(gross_profit/gross_loss,2))
+    if total > 0:
+        print("Win Rate:", round(wins/total*100,2), "%")
+        print("Profit Factor:", round(gross_profit/gross_loss,2))
     print("Final Capital:", round(capital,2))
     print("==========================================")
 
-# ================= ENTRY POINT =================
+# ================= ENTRY =================
 if __name__ == "__main__":
 
     if MODE == "BACKTEST":
         backtest()
     else:
-        run_live()
+        print("Switch MODE to LIVE to activate live trading.")
