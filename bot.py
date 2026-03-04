@@ -9,35 +9,44 @@ import pytz
 
 # ================= CONFIG =================
 
-SCAN_INTERVAL = 900
 RR = 2
+SCAN_INTERVAL = 600
+MAX_TRADES = 3
 START_CAPITAL = 100000
 RISK = 0.01
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHAT_ID = os.getenv("CHAT_ID")
+BOT_TOKEN=os.getenv("BOT_TOKEN")
+CHAT_ID=os.getenv("CHAT_ID")
 
-IST = pytz.timezone("Asia/Kolkata")
+IST=pytz.timezone("Asia/Kolkata")
 
 # ================= STOCK LIST =================
 
-stocks = [
+stocks=[
 "RELIANCE.NS","TCS.NS","INFY.NS","HDFCBANK.NS","ICICIBANK.NS",
 "SBIN.NS","ITC.NS","LT.NS","AXISBANK.NS","KOTAKBANK.NS",
 "BAJFINANCE.NS","ASIANPAINT.NS","TITAN.NS","MARUTI.NS",
 "ULTRACEMCO.NS","JSWSTEEL.NS","TATASTEEL.NS","HINDALCO.NS",
 "ADANIPORTS.NS","DRREDDY.NS","SUNPHARMA.NS","CIPLA.NS",
-"DIVISLAB.NS","SBILIFE.NS","HDFCLIFE.NS","TATAMOTORS.NS",
-"HAL.NS","BEL.NS","TRENT.NS","POLYCAB.NS","SRF.NS",
-"MPHASIS.NS","COFORGE.NS","PERSISTENT.NS","LTIM.NS",
-"VOLTAS.NS","HAVELLS.NS","CUMMINSIND.NS","INDIGO.NS",
-"AUROPHARMA.NS","LUPIN.NS","ALKEM.NS","TORNTPHARM.NS"
+"DIVISLAB.NS","TMPV.NS","HAL.NS","BEL.NS","TRENT.NS",
+"POLYCAB.NS","MPHASIS.NS","COFORGE.NS","PERSISTENT.NS",
+"LTIM.NS","SRF.NS","HAVELLS.NS","CUMMINSIND.NS","INDIGO.NS",
+"LUPIN.NS","ALKEM.NS","ABB.NS","SIEMENS.NS","APLAPOLLO.NS",
+"DIXON.NS","PAGEIND.NS","AARTIIND.NS","PIIND.NS","CHOLAFIN.NS",
+"TORNTPHARM.NS","GODREJCP.NS","GODREJPROP.NS","ZYDUSLIFE.NS",
+"NMDC.NS","BHEL.NS","IRCTC.NS","TATAPOWER.NS","DLF.NS",
+"VEDL.NS","NAUKRI.NS","MUTHOOTFIN.NS","ASTRAL.NS","CONCOR.NS",
+"CANBK.NS","BANKBARODA.NS","INDUSTOWER.NS","TVSMOTOR.NS",
+"EICHERMOT.NS","HEROMOTOCO.NS","APOLLOHOSP.NS","FORTIS.NS",
+"IDFCFIRSTB.NS","BANDHANBNK.NS","ZOMATO.NS"
 ]
 
 # ================= TELEGRAM =================
 
 def send(msg):
+
     if BOT_TOKEN and CHAT_ID:
+
         try:
             url=f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
             requests.post(url,data={"chat_id":CHAT_ID,"text":msg})
@@ -45,7 +54,7 @@ def send(msg):
             pass
 
 
-# ================= DATA CLEANER =================
+# ================= DATA CLEAN =================
 
 def clean(df):
 
@@ -72,48 +81,11 @@ def clean(df):
     return df
 
 
-# ================= INDICATORS =================
-
-def indicators(df):
-
-    close=df["Close"]
-    high=df["High"]
-    low=df["Low"]
-
-    df["ema20"]=ta.trend.EMAIndicator(close,20).ema_indicator()
-    df["ema50"]=ta.trend.EMAIndicator(close,50).ema_indicator()
-
-    df["rsi"]=ta.momentum.RSIIndicator(close,14).rsi()
-
-    df["adx"]=ta.trend.ADXIndicator(high,low,close,14).adx()
-
-    df["atr"]=ta.volatility.AverageTrueRange(high,low,close,14).average_true_range()
-
-    df["vwap"]=ta.volume.VolumeWeightedAveragePrice(
-        high,low,close,df["Volume"]
-    ).volume_weighted_average_price()
-
-    df["vol_avg"]=df["Volume"].rolling(20).mean()
-    df["rel_vol"]=df["Volume"]/df["vol_avg"]
-
-    df.dropna(inplace=True)
-
-    return df
-
-
 # ================= MARKET TREND =================
-
-last_trend_update=0
-cached_trend="NONE"
 
 def market_trend():
 
-    global last_trend_update,cached_trend
-
-    if time.time()-last_trend_update<1800:
-        return cached_trend
-
-    df=yf.download("^NSEI",period="60d",interval="60m",progress=False)
+    df=yf.download("^NSEI",period="5d",interval="15m",progress=False)
 
     df=clean(df)
 
@@ -126,34 +98,68 @@ def market_trend():
     ema50=ta.trend.EMAIndicator(close,50).ema_indicator()
 
     if ema20.iloc[-1]>ema50.iloc[-1]:
-        cached_trend="BULL"
-    else:
-        cached_trend="BEAR"
+        return "BULL"
 
-    last_trend_update=time.time()
-
-    return cached_trend
+    return "BEAR"
 
 
 # ================= SIGNAL =================
 
-def signal(row,trend):
+def signal(df,trend,nifty_return):
 
-    if row["rel_vol"]<1.5:
+    close=df["Close"]
+
+    row=df.iloc[-1]
+
+    returns=close.pct_change().iloc[-1]
+
+    rel_strength=returns-nifty_return
+
+    vol_avg=df["Volume"].rolling(20).mean().iloc[-1]
+
+    if vol_avg==0:
         return None
 
-    if row["adx"]<20:
+    rel_vol=row["Volume"]/vol_avg
+
+    rsi=ta.momentum.RSIIndicator(close,14).rsi().iloc[-1]
+
+    adx=ta.trend.ADXIndicator(
+        df["High"],df["Low"],df["Close"],14
+    ).adx().iloc[-1]
+
+    atr=ta.volatility.AverageTrueRange(
+        df["High"],df["Low"],df["Close"],14
+    ).average_true_range().iloc[-1]
+
+    if rel_vol<2:
         return None
 
-    if trend=="BULL":
+    if adx<20:
+        return None
 
-        if row["Close"]>row["vwap"] and row["ema20"]>row["ema50"] and row["rsi"]>60:
-            return "BUY"
+    if rel_strength<0:
+        return None
 
-    if trend=="BEAR":
+    entry=row["Close"]
 
-        if row["Close"]<row["vwap"] and row["ema20"]<row["ema50"] and row["rsi"]<40:
-            return "SELL"
+    if trend=="BULL" and rsi>60:
+
+        sl=entry-atr
+        tp=entry+RR*(entry-sl)
+
+        score=rsi+adx+rel_vol+rel_strength*100
+
+        return ("BUY",entry,sl,tp,score)
+
+    if trend=="BEAR" and rsi<40:
+
+        sl=entry+atr
+        tp=entry-RR*(sl-entry)
+
+        score=rsi+adx+rel_vol+abs(rel_strength)*100
+
+        return ("SELL",entry,sl,tp,score)
 
     return None
 
@@ -171,81 +177,82 @@ def backtest():
 
     trend=market_trend()
 
-    data=yf.download(
-        tickers=" ".join(stocks),
-        period="45d",
-        interval="15m",
-        group_by="ticker",
-        progress=False
-    )
+    for s in stocks:
 
-    for stock in stocks:
+        df=yf.download(s,period="45d",interval="15m",progress=False)
 
-        try:
+        df=clean(df)
 
-            df=data[stock]
+        if df is None:
+            continue
 
-            df=clean(df)
+        for i in range(30,len(df)-5):
 
-            if df is None:
+            sub=df.iloc[:i]
+
+            row=sub.iloc[-1]
+
+            vol_avg=sub["Volume"].rolling(20).mean().iloc[-1]
+
+            if vol_avg==0:
                 continue
 
-            df=indicators(df)
+            rel_vol=row["Volume"]/vol_avg
 
-            for i in range(len(df)-10):
+            if rel_vol<2:
+                continue
 
-                row=df.iloc[i]
+            atr=ta.volatility.AverageTrueRange(
+                sub["High"],sub["Low"],sub["Close"],14
+            ).average_true_range().iloc[-1]
 
-                direction=signal(row,trend)
+            entry=row["Close"]
 
-                if direction is None:
-                    continue
+            if trend=="BULL":
 
-                trades+=1
+                sl=entry-atr
+                tp=entry+RR*(entry-sl)
 
-                entry=row["Close"]
-                atr=row["atr"]
+            else:
 
-                if direction=="BUY":
-                    sl=entry-1.5*atr
-                    tp=entry+RR*(entry-sl)
+                sl=entry+atr
+                tp=entry-RR*(sl-entry)
+
+            trades+=1
+
+            future=df.iloc[i+1:i+6]
+
+            result="SL"
+
+            for _,f in future.iterrows():
+
+                if trend=="BULL":
+
+                    if f["Low"]<=sl:
+                        break
+
+                    if f["High"]>=tp:
+                        result="TP"
+                        break
+
                 else:
-                    sl=entry+1.5*atr
-                    tp=entry-RR*(sl-entry)
 
-                future=df.iloc[i+1:i+10]
+                    if f["High"]>=sl:
+                        break
 
-                result="SL"
+                    if f["Low"]<=tp:
+                        result="TP"
+                        break
 
-                for _,f in future.iterrows():
+            if result=="TP":
 
-                    if direction=="BUY":
+                wins+=1
+                capital+=capital*RISK*RR
 
-                        if f["Low"]<=sl:
-                            break
+            else:
 
-                        if f["High"]>=tp:
-                            result="TP"
-                            break
-
-                    else:
-
-                        if f["High"]>=sl:
-                            break
-
-                        if f["Low"]<=tp:
-                            result="TP"
-                            break
-
-                if result=="TP":
-                    wins+=1
-                    capital+=capital*RISK*RR
-                else:
-                    losses+=1
-                    capital-=capital*RISK
-
-        except:
-            continue
+                losses+=1
+                capital-=capital*RISK
 
     winrate=(wins/trades*100) if trades else 0
     pf=(wins*RR)/losses if losses else 0
@@ -272,11 +279,22 @@ def live():
             time.sleep(60)
             continue
 
-        if not (9<=now.hour<=15):
+        if now.hour<9 or now.hour>15:
             time.sleep(60)
             continue
 
         trend=market_trend()
+
+        nifty=yf.download("^NSEI",period="2d",interval="15m",progress=False)
+
+        nifty=clean(nifty)
+
+        if nifty is None:
+            continue
+
+        nifty_return=nifty["Close"].pct_change().iloc[-1]
+
+        candidates=[]
 
         data=yf.download(
             tickers=" ".join(stocks),
@@ -286,59 +304,43 @@ def live():
             progress=False
         )
 
-        candidates=[]
-
-        for stock in stocks:
+        for s in stocks:
 
             try:
 
-                df=data[stock]
+                df=data[s]
 
                 df=clean(df)
 
                 if df is None:
                     continue
 
-                df=indicators(df)
+                sig=signal(df,trend,nifty_return)
 
-                row=df.iloc[-1]
+                if sig:
 
-                direction=signal(row,trend)
+                    direction,entry,sl,tp,score=sig
 
-                if direction:
-
-                    score=row["rsi"]+row["adx"]+row["rel_vol"]
-
-                    candidates.append((stock,direction,row,score))
+                    candidates.append((s,direction,entry,sl,tp,score))
 
             except:
                 continue
 
-        candidates.sort(key=lambda x:x[3],reverse=True)
+        candidates.sort(key=lambda x:x[5],reverse=True)
 
-        candidates=candidates[:3]
+        candidates=candidates[:MAX_TRADES]
 
-        for s in candidates:
+        for c in candidates:
 
-            stock,dir,row,_=s
-
-            entry=row["Close"]
-            atr=row["atr"]
-
-            if dir=="BUY":
-                sl=entry-1.5*atr
-                tp=entry+RR*(entry-sl)
-            else:
-                sl=entry+1.5*atr
-                tp=entry-RR*(sl-entry)
+            s,dir,entry,sl,tp,_=c
 
             msg=f"""
-{dir} {stock}
+{dir} {s}
 
 Entry: {round(entry,2)}
-Stop Loss: {round(sl,2)}
+StopLoss: {round(sl,2)}
 Target: {round(tp,2)}
-RR: 1:{RR}
+RR 1:{RR}
 """
 
             print(msg)
