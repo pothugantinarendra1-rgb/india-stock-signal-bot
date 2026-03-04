@@ -23,20 +23,16 @@ IST = pytz.timezone("Asia/Kolkata")
 
 stocks = [
 "RELIANCE.NS","TCS.NS","INFY.NS","HDFCBANK.NS","ICICIBANK.NS",
-"ITC.NS","LT.NS","SBIN.NS","BHARTIARTL.NS","KOTAKBANK.NS",
-"AXISBANK.NS","ASIANPAINT.NS","MARUTI.NS","TITAN.NS",
-"ULTRACEMCO.NS","SUNPHARMA.NS","DRREDDY.NS","JSWSTEEL.NS",
-"TATASTEEL.NS","BAJFINANCE.NS","BAJAJFINSV.NS","HDFCLIFE.NS",
-"SBILIFE.NS","ADANIPORTS.NS","ADANIENT.NS","HINDALCO.NS",
-"POWERGRID.NS","NTPC.NS","ONGC.NS","DIVISLAB.NS",
-"CANBK.NS","BANKBARODA.NS","PNB.NS","FEDERALBNK.NS",
-"POLYCAB.NS","MPHASIS.NS","MUTHOOTFIN.NS","LUPIN.NS",
-"ALKEM.NS","SRF.NS","TRENT.NS","ZEEL.NS",
-"PAGEIND.NS","PIIND.NS","AUBANK.NS","DEEPAKNTR.NS",
-"BALKRISIND.NS","ASHOKLEY.NS","BOSCHLTD.NS","BEL.NS",
-"HAL.NS","INDIGO.NS","SIEMENS.NS","TORNTPHARM.NS",
-"COLPAL.NS","DABUR.NS","GODREJCP.NS","VEDL.NS",
-"TATAMOTORS.NS","HAVELLS.NS","VOLTAS.NS","CUMMINSIND.NS"
+"SBIN.NS","ITC.NS","LT.NS","AXISBANK.NS","KOTAKBANK.NS",
+"BAJFINANCE.NS","ASIANPAINT.NS","TITAN.NS","MARUTI.NS",
+"ULTRACEMCO.NS","JSWSTEEL.NS","TATASTEEL.NS","HINDALCO.NS",
+"ADANIPORTS.NS","DRREDDY.NS","SUNPHARMA.NS","CIPLA.NS",
+"DIVISLAB.NS","HDFCLIFE.NS","SBILIFE.NS","TATAMOTORS.NS",
+"HAL.NS","BEL.NS","POLYCAB.NS","TRENT.NS","SRF.NS","PIIND.NS",
+"MPHASIS.NS","COFORGE.NS","LTIM.NS","PERSISTENT.NS",
+"BALKRISIND.NS","DEEPAKNTR.NS","AUBANK.NS","INDIGO.NS",
+"VOLTAS.NS","HAVELLS.NS","CUMMINSIND.NS","TORNTPHARM.NS",
+"LUPIN.NS","ALKEM.NS","AUROPHARMA.NS"
 ]
 
 # ================= TELEGRAM =================
@@ -44,35 +40,31 @@ stocks = [
 def send(msg):
 
     if BOT_TOKEN and CHAT_ID:
+
         try:
+
             url=f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+
             requests.post(url,data={"chat_id":CHAT_ID,"text":msg})
+
         except:
+
             pass
 
 
-# ================= DATA NORMALIZATION =================
+# ================= DATA FIX =================
 
-def normalize_df(df):
-
-    if df is None or len(df)==0:
-        return None
+def normalize(df):
 
     if isinstance(df.columns,pd.MultiIndex):
+
         df.columns=df.columns.get_level_values(0)
 
-    required=["Open","High","Low","Close","Volume"]
-
-    for col in required:
-        if col not in df.columns:
-            return None
+    for col in ["Open","High","Low","Close","Volume"]:
 
         df[col]=pd.to_numeric(df[col],errors="coerce")
 
     df=df.dropna()
-
-    if len(df)<50:
-        return None
 
     return df
 
@@ -81,10 +73,7 @@ def normalize_df(df):
 
 def indicators(df):
 
-    df=normalize_df(df)
-
-    if df is None:
-        return None
+    df=normalize(df)
 
     close=df["Close"]
     high=df["High"]
@@ -93,23 +82,18 @@ def indicators(df):
 
     df["ema20"]=ta.trend.EMAIndicator(close,20).ema_indicator()
     df["ema50"]=ta.trend.EMAIndicator(close,50).ema_indicator()
-    df["ema200"]=ta.trend.EMAIndicator(close,200).ema_indicator()
 
-    df["atr"]=ta.volatility.AverageTrueRange(
-        high,low,close,14
-    ).average_true_range()
+    df["rsi"]=ta.momentum.RSIIndicator(close,14).rsi()
 
-    df["atr_avg"]=df["atr"].rolling(20).mean()
+    df["adx"]=ta.trend.ADXIndicator(high,low,close,14).adx()
+
+    df["atr"]=ta.volatility.AverageTrueRange(high,low,close,14).average_true_range()
 
     df["vol_avg"]=vol.rolling(20).mean()
 
-    df["hh20"]=high.rolling(20).max().shift(1)
-    df["ll20"]=low.rolling(20).min().shift(1)
+    df["rel_vol"]=vol/df["vol_avg"]
 
-    df=df.dropna()
-
-    if len(df)==0:
-        return None
+    df.dropna(inplace=True)
 
     return df
 
@@ -120,15 +104,15 @@ def market_trend():
 
     df=yf.download("^NSEI",period="60d",interval="60m",progress=False)
 
-    if isinstance(df.columns,pd.MultiIndex):
-        df.columns=df.columns.get_level_values(0)
+    df=normalize(df)
 
-    close=pd.to_numeric(df["Close"],errors="coerce")
+    close=df["Close"]
 
     ema20=ta.trend.EMAIndicator(close,20).ema_indicator()
     ema50=ta.trend.EMAIndicator(close,50).ema_indicator()
 
     if ema20.iloc[-1]>ema50.iloc[-1]:
+
         return "BULL"
 
     return "BEAR"
@@ -138,51 +122,29 @@ def market_trend():
 
 def entry(row,trend):
 
+    if row["rel_vol"]<2:
+
+        return None
+
     if trend=="BULL":
 
-        if not(row["ema20"]>row["ema50"]>row["ema200"]):
+        if row["ema20"]<=row["ema50"]:
             return None
 
-        if row["Close"]<=row["hh20"]:
-            return None
-
-        if row["Volume"]<=2*row["vol_avg"]:
-            return None
-
-        if row["atr"]<=row["atr_avg"]:
+        if row["Close"]<row["ema20"]:
             return None
 
         return "BUY"
 
     else:
 
-        if not(row["ema20"]<row["ema50"]<row["ema200"]):
+        if row["ema20"]>=row["ema50"]:
             return None
 
-        if row["Close"]>=row["ll20"]:
-            return None
-
-        if row["Volume"]<=2*row["vol_avg"]:
-            return None
-
-        if row["atr"]<=row["atr_avg"]:
+        if row["Close"]>row["ema20"]:
             return None
 
         return "SELL"
-
-
-# ================= DOWNLOAD =================
-
-def download():
-
-    return yf.download(
-        tickers=" ".join(stocks),
-        period="60d",
-        interval="15m",
-        group_by="ticker",
-        progress=False,
-        threads=True
-    )
 
 
 # ================= BACKTEST =================
@@ -191,9 +153,16 @@ def backtest():
 
     print("\nRunning Backtest")
 
-    data=download()
+    data=yf.download(
+        tickers=" ".join(stocks),
+        period="60d",
+        interval="15m",
+        group_by="ticker",
+        progress=False
+    )
 
     capital=START_CAPITAL
+
     trades=0
     wins=0
     losses=0
@@ -208,10 +177,7 @@ def backtest():
 
             df=indicators(df)
 
-            if df is None:
-                continue
-
-            for i in range(len(df)-20):
+            for i in range(len(df)-10):
 
                 row=df.iloc[i]
 
@@ -222,18 +188,21 @@ def backtest():
 
                 trades+=1
 
-                price=row["Close"]
+                entry_price=row["Close"]
+
                 atr=row["atr"]
 
                 if direction=="BUY":
-                    sl=price-1.5*atr
-                    tp=price+RR_RATIO*(price-sl)
+
+                    sl=entry_price-1.5*atr
+                    tp=entry_price+RR_RATIO*(entry_price-sl)
 
                 else:
-                    sl=price+1.5*atr
-                    tp=price-RR_RATIO*(sl-price)
 
-                future=df.iloc[i+1:i+20]
+                    sl=entry_price+1.5*atr
+                    tp=entry_price-RR_RATIO*(sl-entry_price)
+
+                future=df.iloc[i+1:i+10]
 
                 result="SL"
 
@@ -241,33 +210,34 @@ def backtest():
 
                     if direction=="BUY":
 
-                        if f["Low"]<=sl:
-                            break
-
+                        if f["Low"]<=sl: break
                         if f["High"]>=tp:
                             result="TP"
                             break
 
                     else:
 
-                        if f["High"]>=sl:
-                            break
-
+                        if f["High"]>=sl: break
                         if f["Low"]<=tp:
                             result="TP"
                             break
 
                 if result=="TP":
+
                     wins+=1
                     capital+=capital*RISK*RR_RATIO
+
                 else:
+
                     losses+=1
                     capital-=capital*RISK
 
         except:
+
             continue
 
     winrate=(wins/trades*100) if trades else 0
+
     pf=(wins*RR_RATIO)/losses if losses else 0
 
     print("\nBacktest Results")
@@ -283,7 +253,7 @@ def backtest():
 
 def live():
 
-    print("\nLive Scanner Started")
+    print("\nInstitutional Scanner Started")
 
     last=None
 
@@ -292,22 +262,28 @@ def live():
         now=datetime.now(IST)
 
         if now.weekday()>=5:
+
             time.sleep(60)
             continue
 
         if not(9<=now.hour<=15):
+
             time.sleep(60)
             continue
 
         if last is None or time.time()-last>SCAN_INTERVAL:
 
-            print("\nRunning Scan:",now)
-
             trend=market_trend()
 
-            data=download()
+            data=yf.download(
+                tickers=" ".join(stocks),
+                period="5d",
+                interval="15m",
+                group_by="ticker",
+                progress=False
+            )
 
-            signals=[]
+            candidates=[]
 
             for stock in stocks:
 
@@ -317,35 +293,33 @@ def live():
 
                     df=indicators(df)
 
-                    if df is None:
-                        continue
-
                     row=df.iloc[-1]
 
                     direction=entry(row,trend)
 
                     if direction:
 
-                        signals.append((stock,direction,row))
+                        momentum=row["rsi"]+row["adx"]
+
+                        candidates.append((stock,direction,row,momentum))
 
                 except:
+
                     continue
 
-            signals=signals[:3]
+            candidates.sort(key=lambda x:x[3],reverse=True)
 
-            for s in signals:
+            candidates=candidates[:5]
 
-                stock,dir,row=s
+            for s in candidates:
 
-                price=row["Close"]
+                stock,dir,row,_=s
 
-                msg=f"{dir} {stock} Entry {round(price,2)}"
+                msg=f"{dir} {stock} Entry {round(row['Close'],2)}"
 
                 print("Signal:",msg)
 
                 send(msg)
-
-            print("Signals:",len(signals))
 
             last=time.time()
 
