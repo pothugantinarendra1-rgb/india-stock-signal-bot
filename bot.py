@@ -22,8 +22,6 @@ IST = pytz.timezone("Asia/Kolkata")
 # ================= STOCK LIST =================
 
 stocks = [
-
-# Large Caps
 "RELIANCE.NS","TCS.NS","INFY.NS","HDFCBANK.NS","ICICIBANK.NS",
 "ITC.NS","LT.NS","SBIN.NS","BHARTIARTL.NS","KOTAKBANK.NS",
 "AXISBANK.NS","ASIANPAINT.NS","MARUTI.NS","TITAN.NS",
@@ -31,25 +29,14 @@ stocks = [
 "TATASTEEL.NS","BAJFINANCE.NS","BAJAJFINSV.NS","HDFCLIFE.NS",
 "SBILIFE.NS","ADANIPORTS.NS","ADANIENT.NS","HINDALCO.NS",
 "POWERGRID.NS","NTPC.NS","ONGC.NS","DIVISLAB.NS",
-
-# Banks
 "CANBK.NS","BANKBARODA.NS","PNB.NS","FEDERALBNK.NS",
-"IDFCFIRSTB.NS","INDUSINDBK.NS","AUROPHARMA.NS",
-
-# Midcaps
 "POLYCAB.NS","MPHASIS.NS","MUTHOOTFIN.NS","LUPIN.NS",
 "ALKEM.NS","SRF.NS","TRENT.NS","ZEEL.NS",
 "PAGEIND.NS","PIIND.NS","AUBANK.NS","DEEPAKNTR.NS",
 "BALKRISIND.NS","ASHOKLEY.NS","BOSCHLTD.NS","BEL.NS",
 "HAL.NS","INDIGO.NS","SIEMENS.NS","TORNTPHARM.NS",
 "COLPAL.NS","DABUR.NS","GODREJCP.NS","VEDL.NS",
-"TATAMOTORS.NS","HAVELLS.NS","VOLTAS.NS","CUMMINSIND.NS",
-"NAUKRI.NS","PERSISTENT.NS","LTIM.NS","COFORGE.NS",
-"OBEROIRLTY.NS","DLF.NS","LODHA.NS","IRCTC.NS",
-"ABCAPITAL.NS","LICHSGFIN.NS","PEL.NS","ICICIGI.NS",
-"ICICIPRULI.NS","TATACOMM.NS","TATAELXSI.NS","LALPATHLAB.NS",
-"METROPOLIS.NS","ESCORTS.NS","THERMAX.NS","SUPREMEIND.NS",
-"ASTRAL.NS","APLAPOLLO.NS","KEI.NS","FINPIPE.NS"
+"TATAMOTORS.NS","HAVELLS.NS","VOLTAS.NS","CUMMINSIND.NS"
 ]
 
 # ================= TELEGRAM =================
@@ -57,30 +44,35 @@ stocks = [
 def send(msg):
 
     if BOT_TOKEN and CHAT_ID:
-
         try:
-
             url=f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-
             requests.post(url,data={"chat_id":CHAT_ID,"text":msg})
-
         except:
-
             pass
 
 
-# ================= DATA =================
+# ================= DATA NORMALIZATION =================
 
-def download():
+def normalize_df(df):
 
-    df=yf.download(
-        tickers=" ".join(stocks),
-        period="60d",
-        interval="15m",
-        group_by="ticker",
-        progress=False,
-        threads=True
-    )
+    if df is None or len(df)==0:
+        return None
+
+    if isinstance(df.columns,pd.MultiIndex):
+        df.columns=df.columns.get_level_values(0)
+
+    required=["Open","High","Low","Close","Volume"]
+
+    for col in required:
+        if col not in df.columns:
+            return None
+
+        df[col]=pd.to_numeric(df[col],errors="coerce")
+
+    df=df.dropna()
+
+    if len(df)<50:
+        return None
 
     return df
 
@@ -89,22 +81,35 @@ def download():
 
 def indicators(df):
 
-    df["ema20"]=ta.trend.EMAIndicator(df["Close"],20).ema_indicator()
-    df["ema50"]=ta.trend.EMAIndicator(df["Close"],50).ema_indicator()
-    df["ema200"]=ta.trend.EMAIndicator(df["Close"],200).ema_indicator()
+    df=normalize_df(df)
+
+    if df is None:
+        return None
+
+    close=df["Close"]
+    high=df["High"]
+    low=df["Low"]
+    vol=df["Volume"]
+
+    df["ema20"]=ta.trend.EMAIndicator(close,20).ema_indicator()
+    df["ema50"]=ta.trend.EMAIndicator(close,50).ema_indicator()
+    df["ema200"]=ta.trend.EMAIndicator(close,200).ema_indicator()
 
     df["atr"]=ta.volatility.AverageTrueRange(
-        df["High"],df["Low"],df["Close"],14
+        high,low,close,14
     ).average_true_range()
 
     df["atr_avg"]=df["atr"].rolling(20).mean()
 
-    df["vol_avg"]=df["Volume"].rolling(20).mean()
+    df["vol_avg"]=vol.rolling(20).mean()
 
-    df["hh20"]=df["High"].rolling(20).max().shift(1)
-    df["ll20"]=df["Low"].rolling(20).min().shift(1)
+    df["hh20"]=high.rolling(20).max().shift(1)
+    df["ll20"]=low.rolling(20).min().shift(1)
 
-    df.dropna(inplace=True)
+    df=df.dropna()
+
+    if len(df)==0:
+        return None
 
     return df
 
@@ -115,13 +120,15 @@ def market_trend():
 
     df=yf.download("^NSEI",period="60d",interval="60m",progress=False)
 
-    close=df["Close"]
+    if isinstance(df.columns,pd.MultiIndex):
+        df.columns=df.columns.get_level_values(0)
+
+    close=pd.to_numeric(df["Close"],errors="coerce")
 
     ema20=ta.trend.EMAIndicator(close,20).ema_indicator()
     ema50=ta.trend.EMAIndicator(close,50).ema_indicator()
 
     if ema20.iloc[-1]>ema50.iloc[-1]:
-
         return "BULL"
 
     return "BEAR"
@@ -164,16 +171,29 @@ def entry(row,trend):
         return "SELL"
 
 
+# ================= DOWNLOAD =================
+
+def download():
+
+    return yf.download(
+        tickers=" ".join(stocks),
+        period="60d",
+        interval="15m",
+        group_by="ticker",
+        progress=False,
+        threads=True
+    )
+
+
 # ================= BACKTEST =================
 
 def backtest():
 
-    print("\nRunning Backtest\n")
+    print("\nRunning Backtest")
 
     data=download()
 
     capital=START_CAPITAL
-
     trades=0
     wins=0
     losses=0
@@ -186,10 +206,10 @@ def backtest():
 
             df=data[stock]
 
-            if df.empty:
-                continue
-
             df=indicators(df)
+
+            if df is None:
+                continue
 
             for i in range(len(df)-20):
 
@@ -206,12 +226,10 @@ def backtest():
                 atr=row["atr"]
 
                 if direction=="BUY":
-
                     sl=price-1.5*atr
                     tp=price+RR_RATIO*(price-sl)
 
                 else:
-
                     sl=price+1.5*atr
                     tp=price-RR_RATIO*(sl-price)
 
@@ -224,7 +242,6 @@ def backtest():
                     if direction=="BUY":
 
                         if f["Low"]<=sl:
-                            result="SL"
                             break
 
                         if f["High"]>=tp:
@@ -234,7 +251,6 @@ def backtest():
                     else:
 
                         if f["High"]>=sl:
-                            result="SL"
                             break
 
                         if f["Low"]<=tp:
@@ -242,22 +258,19 @@ def backtest():
                             break
 
                 if result=="TP":
-
                     wins+=1
                     capital+=capital*RISK*RR_RATIO
-
                 else:
-
                     losses+=1
                     capital-=capital*RISK
 
         except:
-
-            pass
+            continue
 
     winrate=(wins/trades*100) if trades else 0
     pf=(wins*RR_RATIO)/losses if losses else 0
 
+    print("\nBacktest Results")
     print("Trades:",trades)
     print("Wins:",wins)
     print("Losses:",losses)
@@ -270,7 +283,7 @@ def backtest():
 
 def live():
 
-    print("\nLive Scanner Started\n")
+    print("\nLive Scanner Started")
 
     last=None
 
@@ -279,12 +292,10 @@ def live():
         now=datetime.now(IST)
 
         if now.weekday()>=5:
-
             time.sleep(60)
             continue
 
         if not(9<=now.hour<=15):
-
             time.sleep(60)
             continue
 
@@ -300,16 +311,14 @@ def live():
 
             for stock in stocks:
 
-                print("Scanning:",stock)
-
                 try:
 
                     df=data[stock]
 
-                    if df.empty:
-                        continue
-
                     df=indicators(df)
+
+                    if df is None:
+                        continue
 
                     row=df.iloc[-1]
 
@@ -320,8 +329,7 @@ def live():
                         signals.append((stock,direction,row))
 
                 except:
-
-                    pass
+                    continue
 
             signals=signals[:3]
 
