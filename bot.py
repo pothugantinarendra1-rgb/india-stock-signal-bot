@@ -7,15 +7,13 @@ import os
 import pytz
 from datetime import datetime
 
-pd.options.mode.copy_on_write = True
-
 # ================= CONFIG =================
+
 MODE = "LIVE"  # LIVE or BACKTEST
 
 START_CAPITAL = 100000
 RISK_PER_TRADE = 0.015
 RR_RATIO = 2
-DAILY_LOSS_LIMIT = 0.03
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
@@ -23,6 +21,7 @@ CHAT_ID = os.getenv("CHAT_ID")
 IST = pytz.timezone("Asia/Kolkata")
 
 # ================= STOCK UNIVERSE =================
+
 stocks = [
 "RELIANCE.NS","TCS.NS","INFY.NS","HDFCBANK.NS","ICICIBANK.NS",
 "ITC.NS","LT.NS","SBIN.NS","BHARTIARTL.NS","KOTAKBANK.NS",
@@ -44,6 +43,7 @@ stocks = [
 ]
 
 # ================= TELEGRAM =================
+
 def send_telegram(msg):
     if BOT_TOKEN and CHAT_ID:
         try:
@@ -52,7 +52,8 @@ def send_telegram(msg):
         except:
             pass
 
-# ================= DATA DOWNLOAD =================
+# ================= DATA =================
+
 def download_batch(interval="15m"):
 
     df = yf.download(
@@ -66,8 +67,8 @@ def download_batch(interval="15m"):
 
     return df
 
-
 # ================= INDICATORS =================
+
 def add_indicators(df):
 
     df["ema20"] = ta.trend.EMAIndicator(df["Close"],20).ema_indicator()
@@ -94,8 +95,8 @@ def add_indicators(df):
 
     return df
 
-
 # ================= MARKET TREND =================
+
 def get_market_trend():
 
     df = yf.download("^NSEI",period="60d",interval="60m",progress=False)
@@ -113,8 +114,8 @@ def get_market_trend():
     else:
         return "BEAR"
 
-
 # ================= ENTRY LOGIC =================
+
 def check_entry(row,trend):
 
     if (
@@ -141,71 +142,75 @@ def check_entry(row,trend):
 
     return None
 
+# ================= LIVE TRADING =================
 
-# ================= LIVE ENGINE =================
 def run_live():
 
     print("🚀 Optimized Institutional Bot Running")
 
-    trades_today={}
+    trades_today = {}
 
     while True:
 
-        now=datetime.now(IST)
+        try:
 
-        if now.weekday()>=5:
-            time.sleep(60)
-            continue
+            now = datetime.now(IST)
 
-        if not (10<=now.hour<15):
-            time.sleep(30)
-            continue
+            print("Heartbeat:", now)
 
-        if now.minute%15==0 and now.second<5:
+            if now.weekday() >= 5:
+                time.sleep(60)
+                continue
 
-            print("Running scan:",now)
+            if not (9 <= now.hour <= 15):
+                time.sleep(30)
+                continue
 
-            market_trend=get_market_trend()
+            if now.minute % 15 == 0 and now.second < 5:
 
-            data=download_batch()
+                print("Running scan:", now)
 
-            for stock in stocks:
+                market_trend = get_market_trend()
 
-                try:
+                data = download_batch()
 
-                    df=data[stock].copy()
+                for stock in stocks:
 
-                    if df.empty:
-                        continue
+                    try:
 
-                    df=df.astype(float)
+                        df = data[stock].copy()
 
-                    df=add_indicators(df)
+                        if df.empty:
+                            continue
 
-                    latest=df.iloc[-1]
+                        df = df.astype(float)
 
-                    if latest["Close"]<150:
-                        continue
+                        df = add_indicators(df)
 
-                    date_key=now.date()
+                        latest = df.iloc[-1]
 
-                    if trades_today.get((stock,date_key),0)>=3:
-                        continue
+                        if latest["Close"] < 150:
+                            continue
 
-                    direction=check_entry(latest,market_trend)
+                        date_key = now.date()
 
-                    if direction:
+                        if trades_today.get((stock,date_key),0) >= 3:
+                            continue
 
-                        price=latest["Close"]
+                        direction = check_entry(latest,market_trend)
 
-                        if direction=="BUY":
-                            sl=price-1.2*latest["atr"]
-                            target=price+RR_RATIO*(price-sl)
-                        else:
-                            sl=price+1.2*latest["atr"]
-                            target=price-RR_RATIO*(sl-price)
+                        if direction:
 
-                        msg=f"""
+                            price = latest["Close"]
+
+                            if direction=="BUY":
+                                sl = price - 1.2 * latest["atr"]
+                                target = price + RR_RATIO * (price-sl)
+                            else:
+                                sl = price + 1.2 * latest["atr"]
+                                target = price - RR_RATIO * (sl-price)
+
+                            msg = f"""
 {direction} SIGNAL
 
 Stock: {stock}
@@ -215,76 +220,81 @@ Target: {round(target,2)}
 Market Trend: {market_trend}
 """
 
-                        send_telegram(msg)
+                            send_telegram(msg)
 
-                        trades_today[(stock,date_key)]=trades_today.get((stock,date_key),0)+1
+                            trades_today[(stock,date_key)] = trades_today.get((stock,date_key),0) + 1
 
-                        print("Signal:",stock)
+                            print("Signal:",stock)
 
-                except Exception as e:
+                    except Exception as e:
+                        print("Stock Error:",stock,e)
 
-                    print("Error:",stock,e)
+                time.sleep(60)
 
-            time.sleep(60)
+            time.sleep(5)
 
-        time.sleep(2)
+        except Exception as e:
 
+            print("Main Loop Error:",e)
+
+            time.sleep(10)
 
 # ================= BACKTEST =================
+
 def backtest():
 
-    capital=START_CAPITAL
-    wins=losses=total=0
-    gross_profit=gross_loss=0
+    capital = START_CAPITAL
+    wins = losses = total = 0
+    gross_profit = gross_loss = 0
 
-    market_trend=get_market_trend()
+    market_trend = get_market_trend()
 
-    data=download_batch()
+    data = download_batch()
 
     for stock in stocks:
 
-        df=data[stock].copy()
+        df = data[stock].copy()
 
         if df.empty:
             continue
 
-        df=df.astype(float)
+        df = df.astype(float)
 
-        df=add_indicators(df)
+        df = add_indicators(df)
 
-        df=df.tail(45*25)
+        df = df.tail(45*25)
 
-        trades_today={}
+        trades_today = {}
 
         for i in range(len(df)-10):
 
-            row=df.iloc[i]
+            row = df.iloc[i]
 
-            date=row.name.date()
+            date = row.name.date()
 
-            if trades_today.get((stock,date),0)>=3:
+            if trades_today.get((stock,date),0) >= 3:
                 continue
 
-            direction=check_entry(row,market_trend)
+            direction = check_entry(row,market_trend)
 
             if not direction:
                 continue
 
-            price=row["Close"]
+            price = row["Close"]
 
             if direction=="BUY":
-                sl=price-1.2*row["atr"]
-                target=price+RR_RATIO*(price-sl)
+                sl = price - 1.2*row["atr"]
+                target = price + RR_RATIO*(price-sl)
             else:
-                sl=price+1.2*row["atr"]
-                target=price-RR_RATIO*(sl-price)
+                sl = price + 1.2*row["atr"]
+                target = price - RR_RATIO*(sl-price)
 
-            risk_amt=capital*RISK_PER_TRADE
-            qty=risk_amt/abs(price-sl)
+            risk_amt = capital * RISK_PER_TRADE
+            qty = risk_amt / abs(price-sl)
 
-            future=df.iloc[i+1:i+11]
+            future = df.iloc[i+1:i+11]
 
-            result=None
+            result = None
 
             for _,f in future.iterrows():
 
@@ -301,25 +311,25 @@ def backtest():
 
             if result:
 
-                trades_today[(stock,date)]=trades_today.get((stock,date),0)+1
+                trades_today[(stock,date)] = trades_today.get((stock,date),0) + 1
 
-                total+=1
+                total += 1
 
                 if result=="TARGET":
 
-                    profit=qty*abs(target-price)
+                    profit = qty * abs(target-price)
 
-                    capital+=profit
-                    gross_profit+=profit
-                    wins+=1
+                    capital += profit
+                    gross_profit += profit
+                    wins += 1
 
                 else:
 
-                    loss=qty*abs(price-sl)
+                    loss = qty * abs(price-sl)
 
-                    capital-=loss
-                    gross_loss+=loss
-                    losses+=1
+                    capital -= loss
+                    gross_loss += loss
+                    losses += 1
 
     print("\n===== BACKTEST RESULTS =====")
 
@@ -327,19 +337,19 @@ def backtest():
     print("Wins:",wins)
     print("Losses:",losses)
 
-    if total>0:
+    if total > 0:
         print("Win Rate:",round(wins/total*100,2),"%")
         print("Profit Factor:",round(gross_profit/gross_loss,2))
 
     print("Final Capital:",round(capital,2))
 
-    print("============================")
+# ================= START =================
 
+if __name__ == "__main__":
 
-# ================= ENTRY =================
-if __name__=="__main__":
+    print("Starting Institutional Trading Bot...")
 
-    if MODE=="LIVE":
+    if MODE == "LIVE":
         run_live()
     else:
         backtest()
