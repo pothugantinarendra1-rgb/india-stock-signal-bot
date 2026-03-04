@@ -1,213 +1,163 @@
 import yfinance as yf
 import pandas as pd
-import ta
 import requests
-import os
+import numpy as np
 import time
 from datetime import datetime
 import pytz
 
-# ===== CONFIG =====
-
-RR = 2
-SCAN_INTERVAL = 600
-MAX_TRADES = 3
-
-BOT_TOKEN=os.getenv("BOT_TOKEN")
-CHAT_ID=os.getenv("CHAT_ID")
-
 IST=pytz.timezone("Asia/Kolkata")
+
+RR=2
+MAX_TRADES=3
+SCAN_INTERVAL=600
 
 stocks=[
 "RELIANCE.NS","HDFCBANK.NS","ICICIBANK.NS","TCS.NS","INFY.NS",
 "SBIN.NS","LT.NS","AXISBANK.NS","KOTAKBANK.NS","ITC.NS",
 "BAJFINANCE.NS","TITAN.NS","ASIANPAINT.NS","MARUTI.NS",
-"ULTRACEMCO.NS","JSWSTEEL.NS","TATASTEEL.NS","HINDALCO.NS",
-"ADANIPORTS.NS","HAL.NS","BEL.NS","TRENT.NS","POLYCAB.NS",
-"PERSISTENT.NS","COFORGE.NS","MPHASIS.NS","LTIM.NS",
-"SRF.NS","HAVELLS.NS","CUMMINSIND.NS","DIXON.NS",
-"ABB.NS","SIEMENS.NS","APLAPOLLO.NS"
+"HAL.NS","BEL.NS","TRENT.NS","POLYCAB.NS","PERSISTENT.NS",
+"COFORGE.NS","MPHASIS.NS","SRF.NS","HAVELLS.NS","CUMMINSIND.NS",
+"SIEMENS.NS","ABB.NS","APLAPOLLO.NS","DIXON.NS","PAGEIND.NS"
 ]
 
-# ===== TELEGRAM =====
+# ================= MARKET BIAS =================
 
-def send(msg):
+def market_bias():
 
-    if BOT_TOKEN and CHAT_ID:
-
-        try:
-            url=f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-            requests.post(url,data={"chat_id":CHAT_ID,"text":msg})
-        except:
-            pass
-
-
-# ===== DATA CLEAN =====
-
-def clean(df):
-
-    if df is None or df.empty:
-        return None
-
-    if isinstance(df.columns,pd.MultiIndex):
-        df.columns=df.columns.get_level_values(0)
-
-    for c in ["Open","High","Low","Close","Volume"]:
-
-        if c not in df.columns:
-            return None
-
-        df[c]=pd.to_numeric(df[c],errors="coerce")
-
-    df=df.dropna()
-
-    if len(df)<40:
-        return None
-
-    return df
-
-
-# ===== MARKET TREND =====
-
-def market_trend():
-
-    df=yf.download("^NSEI",period="5d",interval="15m",progress=False)
-
-    df=clean(df)
+    df=yf.download("^NSEI",period="5d",interval="15m")
 
     close=df["Close"]
 
-    ema20=ta.trend.EMAIndicator(close,20).ema_indicator()
-    ema50=ta.trend.EMAIndicator(close,50).ema_indicator()
+    vwap=(close*df["Volume"]).cumsum()/df["Volume"].cumsum()
 
-    if ema20.iloc[-1]>ema50.iloc[-1]:
+    if close.iloc[-1]>vwap.iloc[-1]:
+
         return "BULL"
 
     return "BEAR"
 
+# ================= FVG DETECTION =================
 
-# ===== VWAP CALC =====
+def find_fvg(df):
 
-def add_vwap(df):
+    gaps=[]
 
-    tp=(df["High"]+df["Low"]+df["Close"])/3
+    for i in range(2,len(df)):
 
-    df["vwap"]=(tp*df["Volume"]).cumsum()/df["Volume"].cumsum()
+        c1=df.iloc[i-2]
+        c3=df.iloc[i]
 
-    return df
+        if c1["High"]<c3["Low"]:
 
+            gaps.append(("bull",c1["High"],c3["Low"]))
 
-# ===== SIGNAL =====
+        if c1["Low"]>c3["High"]:
 
-def signal(df,trend):
+            gaps.append(("bear",c3["High"],c1["Low"]))
 
-    df=add_vwap(df)
+    return gaps
 
-    close=df["Close"]
-    row=df.iloc[-1]
-    prev=df.iloc[-2]
+# ================= LIQUIDITY SWEEP =================
 
-    rsi=ta.momentum.RSIIndicator(close,14).rsi().iloc[-1]
+def liquidity_sweep(df):
 
-    vol_avg=df["Volume"].rolling(20).mean().iloc[-1]
+    prev_high=df["High"].rolling(20).max().iloc[-2]
 
-    if vol_avg==0:
-        return None
+    prev_low=df["Low"].rolling(20).min().iloc[-2]
 
-    rel_vol=row["Volume"]/vol_avg
+    last=df.iloc[-1]
 
-    if rel_vol<1.5:
-        return None
+    if last["Low"]<prev_low:
 
-    entry=row["Close"]
+        return "sell_liquidity"
 
-    if trend=="BULL":
+    if last["High"]>prev_high:
 
-        if prev["Low"]<=prev["vwap"] and row["Close"]>row["vwap"] and rsi>50:
-
-            sl=prev["Low"]
-            tp=entry+RR*(entry-sl)
-
-            score=rsi+rel_vol
-
-            return ("BUY",entry,sl,tp,score)
-
-    if trend=="BEAR":
-
-        if prev["High"]>=prev["vwap"] and row["Close"]<row["vwap"] and rsi<50:
-
-            sl=prev["High"]
-            tp=entry-RR*(sl-entry)
-
-            score=rsi+rel_vol
-
-            return ("SELL",entry,sl,tp,score)
+        return "buy_liquidity"
 
     return None
 
+# ================= SIGNAL =================
 
-# ===== BACKTEST =====
+def signal(df,bias):
+
+    sweep=liquidity_sweep(df)
+
+    gaps=find_fvg(df)
+
+    if not gaps:
+        return None
+
+    last=df.iloc[-1]
+
+    for g in gaps[-3:]:
+
+        direction,low,high=g
+
+        if direction=="bull" and bias=="BULL":
+
+            if low<last["Close"]<high:
+
+                sl=last["Low"]
+
+                entry=last["Close"]
+
+                tp=entry+RR*(entry-sl)
+
+                return ("BUY",entry,sl,tp)
+
+        if direction=="bear" and bias=="BEAR":
+
+            if low<last["Close"]<high:
+
+                sl=last["High"]
+
+                entry=last["Close"]
+
+                tp=entry-RR*(sl-entry)
+
+                return ("SELL",entry,sl,tp)
+
+    return None
+
+# ================= BACKTEST =================
 
 def backtest():
-
-    print("\nRunning VWAP Backtest\n")
 
     trades=0
     wins=0
     losses=0
 
-    trend=market_trend()
+    bias=market_bias()
 
     for s in stocks:
 
-        df=yf.download(s,period="45d",interval="15m",progress=False)
+        df=yf.download(s,period="45d",interval="15m")
 
-        df=clean(df)
-
-        if df is None:
+        if df.empty:
             continue
 
-        df=add_vwap(df)
+        for i in range(30,len(df)-5):
 
-        for i in range(20,len(df)-5):
+            sub=df.iloc[:i]
 
-            row=df.iloc[i]
-            prev=df.iloc[i-1]
+            sig=signal(sub,bias)
 
-            vol_avg=df["Volume"].rolling(20).mean().iloc[i]
-
-            if vol_avg==0:
+            if not sig:
                 continue
 
-            rel_vol=row["Volume"]/vol_avg
+            direction,entry,sl,tp=sig
 
-            if rel_vol<1.5:
-                continue
-
-            entry=row["Close"]
-
-            if trend=="BULL" and prev["Low"]<=prev["vwap"] and row["Close"]>row["vwap"]:
-
-                sl=prev["Low"]
-                tp=entry+RR*(entry-sl)
-
-            elif trend=="BEAR" and prev["High"]>=prev["vwap"] and row["Close"]<row["vwap"]:
-
-                sl=prev["High"]
-                tp=entry-RR*(sl-entry)
-
-            else:
-                continue
+            future=df.iloc[i:i+5]
 
             trades+=1
-
-            future=df.iloc[i+1:i+6]
 
             result="SL"
 
             for _,f in future.iterrows():
 
-                if trend=="BULL":
+                if direction=="BUY":
 
                     if f["Low"]<=sl:
                         break
@@ -216,7 +166,7 @@ def backtest():
                         result="TP"
                         break
 
-                else:
+                if direction=="SELL":
 
                     if f["High"]>=sl:
                         break
@@ -231,82 +181,48 @@ def backtest():
                 losses+=1
 
     winrate=(wins/trades*100) if trades else 0
-    pf=(wins*RR)/losses if losses else 0
 
     print("Trades:",trades)
     print("Wins:",wins)
     print("Losses:",losses)
     print("WinRate:",round(winrate,2))
-    print("ProfitFactor:",round(pf,2))
 
-
-# ===== LIVE SCANNER =====
+# ================= LIVE SCANNER =================
 
 def live():
 
-    print("\nV13 Institutional VWAP Scanner Running\n")
+    print("Smart Money Scanner Running")
 
     while True:
 
-        trend=market_trend()
+        bias=market_bias()
 
-        candidates=[]
-
-        data=yf.download(
-            tickers=" ".join(stocks),
-            period="1d",
-            interval="5m",
-            group_by="ticker",
-            progress=False
-        )
+        signals=[]
 
         for s in stocks:
 
-            try:
+            df=yf.download(s,period="1d",interval="5m")
 
-                df=data[s]
-
-                df=clean(df)
-
-                if df is None:
-                    continue
-
-                sig=signal(df,trend)
-
-                if sig:
-
-                    direction,entry,sl,tp,score=sig
-
-                    candidates.append((s,direction,entry,sl,tp,score))
-
-            except:
+            if df.empty:
                 continue
 
-        candidates.sort(key=lambda x:x[5],reverse=True)
+            sig=signal(df,bias)
 
-        candidates=candidates[:MAX_TRADES]
+            if sig:
 
-        for c in candidates:
+                direction,entry,sl,tp=sig
 
-            s,dir,entry,sl,tp,_=c
+                signals.append((s,direction,entry,sl,tp))
 
-            msg=f"""
-{dir} {s}
+        signals=signals[:MAX_TRADES]
 
-Entry: {round(entry,2)}
-StopLoss: {round(sl,2)}
-Target: {round(tp,2)}
-RR 1:{RR}
-"""
+        for s,d,e,sl,tp in signals:
 
-            print(msg)
-
-            send(msg)
+            print(s,d,e,sl,tp)
 
         time.sleep(SCAN_INTERVAL)
 
-
-# ===== START =====
+# ================= START =================
 
 if __name__=="__main__":
 
