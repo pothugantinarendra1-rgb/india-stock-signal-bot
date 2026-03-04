@@ -9,8 +9,8 @@ from datetime import datetime, timedelta
 
 # ================= CONFIG =================
 
-MODE = "LIVE"   # LIVE or BACKTEST
-DEBUG = False   # set True to see rejection reasons
+MODE = "LIVE"  # LIVE or BACKTEST
+DEBUG = False
 
 START_CAPITAL = 100000
 RISK_PER_TRADE = 0.015
@@ -48,12 +48,12 @@ stocks = [
 def send_telegram(msg):
     if BOT_TOKEN and CHAT_ID:
         try:
-            url=f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-            requests.post(url,data={"chat_id":CHAT_ID,"text":msg})
+            url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+            requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
         except:
             pass
 
-# ================= DATA DOWNLOAD =================
+# ================= DATA =================
 
 def download_batch(interval="15m"):
 
@@ -62,8 +62,8 @@ def download_batch(interval="15m"):
         period="60d",
         interval=interval,
         group_by="ticker",
-        threads=True,
-        progress=False
+        progress=False,
+        threads=True
     )
 
     return df
@@ -72,25 +72,25 @@ def download_batch(interval="15m"):
 
 def add_indicators(df):
 
-    df["ema20"]=ta.trend.EMAIndicator(df["Close"],20).ema_indicator()
-    df["ema50"]=ta.trend.EMAIndicator(df["Close"],50).ema_indicator()
+    df["ema20"] = ta.trend.EMAIndicator(df["Close"],20).ema_indicator()
+    df["ema50"] = ta.trend.EMAIndicator(df["Close"],50).ema_indicator()
 
-    df["rsi"]=ta.momentum.RSIIndicator(df["Close"],14).rsi()
+    df["rsi"] = ta.momentum.RSIIndicator(df["Close"],14).rsi()
 
-    df["atr"]=ta.volatility.AverageTrueRange(
+    df["atr"] = ta.volatility.AverageTrueRange(
         df["High"],df["Low"],df["Close"],14
     ).average_true_range()
 
-    df["atr_avg"]=df["atr"].rolling(20).mean()
+    df["atr_avg"] = df["atr"].rolling(20).mean()
 
-    df["adx"]=ta.trend.ADXIndicator(
+    df["adx"] = ta.trend.ADXIndicator(
         df["High"],df["Low"],df["Close"],14
     ).adx()
 
-    df["vol_avg"]=df["Volume"].rolling(20).mean()
+    df["vol_avg"] = df["Volume"].rolling(20).mean()
 
-    df["hh10"]=df["High"].rolling(10).max().shift(1)
-    df["ll10"]=df["Low"].rolling(10).min().shift(1)
+    df["hh10"] = df["High"].rolling(10).max().shift(1)
+    df["ll10"] = df["Low"].rolling(10).min().shift(1)
 
     df.dropna(inplace=True)
 
@@ -100,17 +100,17 @@ def add_indicators(df):
 
 def get_market_trend():
 
-    df=yf.download("^NSEI",period="60d",interval="60m",progress=False)
+    df = yf.download("^NSEI", period="60d", interval="60m", progress=False)
 
     if isinstance(df.columns,pd.MultiIndex):
-        df.columns=df.columns.get_level_values(0)
+        df.columns = df.columns.get_level_values(0)
 
-    close=df["Close"].astype(float)
+    close = df["Close"].astype(float)
 
-    ema20=ta.trend.EMAIndicator(close,20).ema_indicator()
-    ema50=ta.trend.EMAIndicator(close,50).ema_indicator()
+    ema20 = ta.trend.EMAIndicator(close,20).ema_indicator()
+    ema50 = ta.trend.EMAIndicator(close,50).ema_indicator()
 
-    if ema20.iloc[-1]>ema50.iloc[-1]:
+    if ema20.iloc[-1] > ema50.iloc[-1]:
         return "BULL"
     else:
         return "BEAR"
@@ -167,9 +167,8 @@ def check_entry(row,trend):
 
 def run_live():
 
-    print("🚀 Trading Bot Started")
+    print("Trading Bot Started")
 
-    trades_today={}
     next_scan=None
 
     while True:
@@ -177,8 +176,6 @@ def run_live():
         try:
 
             now=datetime.now(IST)
-
-            print("Heartbeat:",now)
 
             if now.weekday()>=5:
                 time.sleep(60)
@@ -193,15 +190,19 @@ def run_live():
 
             if now>=next_scan:
 
-                print("Running scan:",now)
+                print("\nRunning scan:",now)
 
                 market_trend=get_market_trend()
 
                 data=download_batch()
 
+                scanned=0
+
                 for stock in stocks:
 
                     try:
+
+                        print("Scanning:",stock)
 
                         df=data[stock].copy()
 
@@ -216,10 +217,12 @@ def run_live():
 
                         direction,reason=check_entry(latest,market_trend)
 
+                        scanned+=1
+
                         if direction is None:
 
                             if DEBUG:
-                                print(stock,"rejected:",reason)
+                                print("Rejected:",stock,"->",reason)
 
                             continue
 
@@ -242,13 +245,15 @@ Target: {round(target,2)}
 Market Trend: {market_trend}
 """
 
-                        send_telegram(msg)
+                        print("Signal:",stock,direction)
 
-                        print("Signal:",stock)
+                        send_telegram(msg)
 
                     except Exception as e:
 
                         print("Stock error:",stock,e)
+
+                print("\nScan complete. Stocks scanned:",scanned)
 
                 next_scan=now+timedelta(minutes=15)
 
@@ -358,8 +363,6 @@ def backtest():
 # ================= START =================
 
 if __name__=="__main__":
-
-    print("Starting Trading Bot")
 
     if MODE=="LIVE":
         run_live()
