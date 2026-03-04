@@ -7,41 +7,29 @@ import time
 from datetime import datetime
 import pytz
 
-# ================= CONFIG =================
+# ===== CONFIG =====
 
 RR = 2
 SCAN_INTERVAL = 600
 MAX_TRADES = 3
-START_CAPITAL = 100000
-RISK = 0.01
 
 BOT_TOKEN=os.getenv("BOT_TOKEN")
 CHAT_ID=os.getenv("CHAT_ID")
 
 IST=pytz.timezone("Asia/Kolkata")
 
-# ================= STOCK LIST =================
-
 stocks=[
-"RELIANCE.NS","TCS.NS","INFY.NS","HDFCBANK.NS","ICICIBANK.NS",
-"SBIN.NS","ITC.NS","LT.NS","AXISBANK.NS","KOTAKBANK.NS",
-"BAJFINANCE.NS","ASIANPAINT.NS","TITAN.NS","MARUTI.NS",
+"RELIANCE.NS","HDFCBANK.NS","ICICIBANK.NS","TCS.NS","INFY.NS",
+"SBIN.NS","LT.NS","AXISBANK.NS","KOTAKBANK.NS","ITC.NS",
+"BAJFINANCE.NS","TITAN.NS","ASIANPAINT.NS","MARUTI.NS",
 "ULTRACEMCO.NS","JSWSTEEL.NS","TATASTEEL.NS","HINDALCO.NS",
-"ADANIPORTS.NS","DRREDDY.NS","SUNPHARMA.NS","CIPLA.NS",
-"DIVISLAB.NS","TMPV.NS","HAL.NS","BEL.NS","TRENT.NS",
-"POLYCAB.NS","MPHASIS.NS","COFORGE.NS","PERSISTENT.NS",
-"LTIM.NS","SRF.NS","HAVELLS.NS","CUMMINSIND.NS","INDIGO.NS",
-"LUPIN.NS","ALKEM.NS","ABB.NS","SIEMENS.NS","APLAPOLLO.NS",
-"DIXON.NS","PAGEIND.NS","AARTIIND.NS","PIIND.NS","CHOLAFIN.NS",
-"TORNTPHARM.NS","GODREJCP.NS","GODREJPROP.NS","ZYDUSLIFE.NS",
-"NMDC.NS","BHEL.NS","IRCTC.NS","TATAPOWER.NS","DLF.NS",
-"VEDL.NS","NAUKRI.NS","MUTHOOTFIN.NS","ASTRAL.NS","CONCOR.NS",
-"CANBK.NS","BANKBARODA.NS","INDUSTOWER.NS","TVSMOTOR.NS",
-"EICHERMOT.NS","HEROMOTOCO.NS","APOLLOHOSP.NS","FORTIS.NS",
-"IDFCFIRSTB.NS","BANDHANBNK.NS","ZOMATO.NS"
+"ADANIPORTS.NS","HAL.NS","BEL.NS","TRENT.NS","POLYCAB.NS",
+"PERSISTENT.NS","COFORGE.NS","MPHASIS.NS","LTIM.NS",
+"SRF.NS","HAVELLS.NS","CUMMINSIND.NS","DIXON.NS",
+"ABB.NS","SIEMENS.NS","APLAPOLLO.NS"
 ]
 
-# ================= TELEGRAM =================
+# ===== TELEGRAM =====
 
 def send(msg):
 
@@ -54,7 +42,7 @@ def send(msg):
             pass
 
 
-# ================= DATA CLEAN =================
+# ===== DATA CLEAN =====
 
 def clean(df):
 
@@ -64,33 +52,28 @@ def clean(df):
     if isinstance(df.columns,pd.MultiIndex):
         df.columns=df.columns.get_level_values(0)
 
-    required=["Open","High","Low","Close","Volume"]
+    for c in ["Open","High","Low","Close","Volume"]:
 
-    for col in required:
-
-        if col not in df.columns:
+        if c not in df.columns:
             return None
 
-        df[col]=pd.to_numeric(df[col],errors="coerce")
+        df[c]=pd.to_numeric(df[c],errors="coerce")
 
     df=df.dropna()
 
-    if len(df)<50:
+    if len(df)<40:
         return None
 
     return df
 
 
-# ================= MARKET TREND =================
+# ===== MARKET TREND =====
 
 def market_trend():
 
     df=yf.download("^NSEI",period="5d",interval="15m",progress=False)
 
     df=clean(df)
-
-    if df is None:
-        return "NONE"
 
     close=df["Close"]
 
@@ -103,17 +86,28 @@ def market_trend():
     return "BEAR"
 
 
-# ================= SIGNAL =================
+# ===== VWAP CALC =====
 
-def signal(df,trend,nifty_return):
+def add_vwap(df):
+
+    tp=(df["High"]+df["Low"]+df["Close"])/3
+
+    df["vwap"]=(tp*df["Volume"]).cumsum()/df["Volume"].cumsum()
+
+    return df
+
+
+# ===== SIGNAL =====
+
+def signal(df,trend):
+
+    df=add_vwap(df)
 
     close=df["Close"]
-
     row=df.iloc[-1]
+    prev=df.iloc[-2]
 
-    returns=close.pct_change().iloc[-1]
-
-    rel_strength=returns-nifty_return
+    rsi=ta.momentum.RSIIndicator(close,14).rsi().iloc[-1]
 
     vol_avg=df["Volume"].rolling(20).mean().iloc[-1]
 
@@ -122,58 +116,45 @@ def signal(df,trend,nifty_return):
 
     rel_vol=row["Volume"]/vol_avg
 
-    rsi=ta.momentum.RSIIndicator(close,14).rsi().iloc[-1]
-
-    adx=ta.trend.ADXIndicator(
-        df["High"],df["Low"],df["Close"],14
-    ).adx().iloc[-1]
-
-    atr=ta.volatility.AverageTrueRange(
-        df["High"],df["Low"],df["Close"],14
-    ).average_true_range().iloc[-1]
-
-    if rel_vol<2:
-        return None
-
-    if adx<20:
-        return None
-
-    if rel_strength<0:
+    if rel_vol<1.5:
         return None
 
     entry=row["Close"]
 
-    if trend=="BULL" and rsi>60:
+    if trend=="BULL":
 
-        sl=entry-atr
-        tp=entry+RR*(entry-sl)
+        if prev["Low"]<=prev["vwap"] and row["Close"]>row["vwap"] and rsi>50:
 
-        score=rsi+adx+rel_vol+rel_strength*100
+            sl=prev["Low"]
+            tp=entry+RR*(entry-sl)
 
-        return ("BUY",entry,sl,tp,score)
+            score=rsi+rel_vol
 
-    if trend=="BEAR" and rsi<40:
+            return ("BUY",entry,sl,tp,score)
 
-        sl=entry+atr
-        tp=entry-RR*(sl-entry)
+    if trend=="BEAR":
 
-        score=rsi+adx+rel_vol+abs(rel_strength)*100
+        if prev["High"]>=prev["vwap"] and row["Close"]<row["vwap"] and rsi<50:
 
-        return ("SELL",entry,sl,tp,score)
+            sl=prev["High"]
+            tp=entry-RR*(sl-entry)
+
+            score=rsi+rel_vol
+
+            return ("SELL",entry,sl,tp,score)
 
     return None
 
 
-# ================= BACKTEST =================
+# ===== BACKTEST =====
 
 def backtest():
 
-    print("\nRunning Backtest\n")
+    print("\nRunning VWAP Backtest\n")
 
-    capital=START_CAPITAL
+    trades=0
     wins=0
     losses=0
-    trades=0
 
     trend=market_trend()
 
@@ -186,37 +167,37 @@ def backtest():
         if df is None:
             continue
 
-        for i in range(30,len(df)-5):
+        df=add_vwap(df)
 
-            sub=df.iloc[:i]
+        for i in range(20,len(df)-5):
 
-            row=sub.iloc[-1]
+            row=df.iloc[i]
+            prev=df.iloc[i-1]
 
-            vol_avg=sub["Volume"].rolling(20).mean().iloc[-1]
+            vol_avg=df["Volume"].rolling(20).mean().iloc[i]
 
             if vol_avg==0:
                 continue
 
             rel_vol=row["Volume"]/vol_avg
 
-            if rel_vol<2:
+            if rel_vol<1.5:
                 continue
-
-            atr=ta.volatility.AverageTrueRange(
-                sub["High"],sub["Low"],sub["Close"],14
-            ).average_true_range().iloc[-1]
 
             entry=row["Close"]
 
-            if trend=="BULL":
+            if trend=="BULL" and prev["Low"]<=prev["vwap"] and row["Close"]>row["vwap"]:
 
-                sl=entry-atr
+                sl=prev["Low"]
                 tp=entry+RR*(entry-sl)
 
-            else:
+            elif trend=="BEAR" and prev["High"]>=prev["vwap"] and row["Close"]<row["vwap"]:
 
-                sl=entry+atr
+                sl=prev["High"]
                 tp=entry-RR*(sl-entry)
+
+            else:
+                continue
 
             trades+=1
 
@@ -245,14 +226,9 @@ def backtest():
                         break
 
             if result=="TP":
-
                 wins+=1
-                capital+=capital*RISK*RR
-
             else:
-
                 losses+=1
-                capital-=capital*RISK
 
     winrate=(wins/trades*100) if trades else 0
     pf=(wins*RR)/losses if losses else 0
@@ -262,44 +238,24 @@ def backtest():
     print("Losses:",losses)
     print("WinRate:",round(winrate,2))
     print("ProfitFactor:",round(pf,2))
-    print("FinalCapital:",round(capital,2))
 
 
-# ================= LIVE SCANNER =================
+# ===== LIVE SCANNER =====
 
 def live():
 
-    print("\nLive Scanner Started\n")
+    print("\nV13 Institutional VWAP Scanner Running\n")
 
     while True:
 
-        now=datetime.now(IST)
-
-        if now.weekday()>=5:
-            time.sleep(60)
-            continue
-
-        if now.hour<9 or now.hour>15:
-            time.sleep(60)
-            continue
-
         trend=market_trend()
-
-        nifty=yf.download("^NSEI",period="2d",interval="15m",progress=False)
-
-        nifty=clean(nifty)
-
-        if nifty is None:
-            continue
-
-        nifty_return=nifty["Close"].pct_change().iloc[-1]
 
         candidates=[]
 
         data=yf.download(
             tickers=" ".join(stocks),
-            period="5d",
-            interval="15m",
+            period="1d",
+            interval="5m",
             group_by="ticker",
             progress=False
         )
@@ -315,7 +271,7 @@ def live():
                 if df is None:
                     continue
 
-                sig=signal(df,trend,nifty_return)
+                sig=signal(df,trend)
 
                 if sig:
 
@@ -350,7 +306,7 @@ RR 1:{RR}
         time.sleep(SCAN_INTERVAL)
 
 
-# ================= START =================
+# ===== START =====
 
 if __name__=="__main__":
 
