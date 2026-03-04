@@ -5,16 +5,17 @@ import requests
 import time
 import os
 import pytz
-from datetime import datetime, timedelta
+from datetime import datetime
 
 # ================= CONFIG =================
 
 MODE = "LIVE"  # LIVE or BACKTEST
-DEBUG = False
 
-START_CAPITAL = 100000
-RISK_PER_TRADE = 0.015
+SCAN_INTERVAL = 900  # 15 minutes
+
 RR_RATIO = 2
+RISK_PER_TRADE = 0.015
+START_CAPITAL = 100000
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
@@ -46,27 +47,34 @@ stocks = [
 # ================= TELEGRAM =================
 
 def send_telegram(msg):
+
     if BOT_TOKEN and CHAT_ID:
+
         try:
+
             url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-            requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
+
+            requests.post(url,data={"chat_id":CHAT_ID,"text":msg})
+
         except:
             pass
 
-# ================= DATA =================
 
-def download_batch(interval="15m"):
+# ================= DATA DOWNLOAD =================
+
+def download_batch():
 
     df = yf.download(
         tickers=" ".join(stocks),
         period="60d",
-        interval=interval,
+        interval="15m",
         group_by="ticker",
-        progress=False,
-        threads=True
+        threads=True,
+        progress=False
     )
 
     return df
+
 
 # ================= INDICATORS =================
 
@@ -92,17 +100,21 @@ def add_indicators(df):
     df["hh10"] = df["High"].rolling(10).max().shift(1)
     df["ll10"] = df["Low"].rolling(10).min().shift(1)
 
+    df["vwap"] = (df["Close"]*df["Volume"]).cumsum()/df["Volume"].cumsum()
+
     df.dropna(inplace=True)
 
     return df
+
 
 # ================= MARKET TREND =================
 
 def get_market_trend():
 
-    df = yf.download("^NSEI", period="60d", interval="60m", progress=False)
+    df = yf.download("^NSEI",period="60d",interval="60m",progress=False)
 
     if isinstance(df.columns,pd.MultiIndex):
+
         df.columns = df.columns.get_level_values(0)
 
     close = df["Close"].astype(float)
@@ -111,65 +123,64 @@ def get_market_trend():
     ema50 = ta.trend.EMAIndicator(close,50).ema_indicator()
 
     if ema20.iloc[-1] > ema50.iloc[-1]:
-        return "BULL"
-    else:
-        return "BEAR"
 
-# ================= ENTRY CHECK =================
+        return "BULL"
+
+    return "BEAR"
+
+
+# ================= ENTRY LOGIC =================
 
 def check_entry(row,trend):
 
+    momentum = row["rsi"] + row["adx"]
+
     if trend=="BULL":
 
-        if row["ema20"]<=row["ema50"]:
-            return None,"EMA trend fail"
+        if row["ema20"] <= row["ema50"]:
+            return None
 
-        if row["Close"]<=row["hh10"]:
-            return None,"Breakout fail"
+        if row["Close"] <= row["hh10"]:
+            return None
 
-        if row["adx"]<=18:
-            return None,"ADX weak"
+        if row["Close"] <= row["vwap"]:
+            return None
 
-        if row["rsi"]<=52:
-            return None,"RSI weak"
+        if row["Volume"] <= 1.5 * row["vol_avg"]:
+            return None
 
-        if row["Volume"]<=row["vol_avg"]:
-            return None,"Volume weak"
+        if row["atr"] <= row["atr_avg"]:
+            return None
 
-        if row["atr"]<=row["atr_avg"]:
-            return None,"ATR low"
-
-        return "BUY","OK"
+        return ("BUY",momentum)
 
     else:
 
-        if row["ema20"]>=row["ema50"]:
-            return None,"EMA trend fail"
+        if row["ema20"] >= row["ema50"]:
+            return None
 
-        if row["Close"]>=row["ll10"]:
-            return None,"Breakdown fail"
+        if row["Close"] >= row["ll10"]:
+            return None
 
-        if row["adx"]<=18:
-            return None,"ADX weak"
+        if row["Close"] >= row["vwap"]:
+            return None
 
-        if row["rsi"]>=48:
-            return None,"RSI weak"
+        if row["Volume"] <= 1.5 * row["vol_avg"]:
+            return None
 
-        if row["Volume"]<=row["vol_avg"]:
-            return None,"Volume weak"
+        if row["atr"] <= row["atr_avg"]:
+            return None
 
-        if row["atr"]<=row["atr_avg"]:
-            return None,"ATR low"
+        return ("SELL",momentum)
 
-        return "SELL","OK"
 
 # ================= LIVE BOT =================
 
 def run_live():
 
-    print("Trading Bot Started")
+    print("BOT STARTED")
 
-    next_scan=None
+    last_scan=None
 
     while True:
 
@@ -182,27 +193,25 @@ def run_live():
                 continue
 
             if not (9<=now.hour<=15):
-                time.sleep(30)
+                time.sleep(60)
                 continue
 
-            if next_scan is None:
-                next_scan=now
-
-            if now>=next_scan:
+            if last_scan is None or (time.time()-last_scan)>=SCAN_INTERVAL:
 
                 print("\nRunning scan:",now)
 
-                market_trend=get_market_trend()
+                trend=get_market_trend()
 
                 data=download_batch()
 
                 scanned=0
+                signals=[]
 
                 for stock in stocks:
 
-                    try:
+                    print("Scanning:",stock)
 
-                        print("Scanning:",stock)
+                    try:
 
                         df=data[stock].copy()
 
@@ -213,158 +222,121 @@ def run_live():
 
                         df=add_indicators(df)
 
-                        latest=df.iloc[-1]
+                        row=df.iloc[-1]
 
-                        direction,reason=check_entry(latest,market_trend)
+                        result=check_entry(row,trend)
 
                         scanned+=1
 
-                        if direction is None:
-
-                            if DEBUG:
-                                print("Rejected:",stock,"->",reason)
-
+                        if result is None:
                             continue
 
-                        price=latest["Close"]
+                        direction,momentum=result
 
-                        if direction=="BUY":
-                            sl=price-1.2*latest["atr"]
-                            target=price+RR_RATIO*(price-sl)
-                        else:
-                            sl=price+1.2*latest["atr"]
-                            target=price-RR_RATIO*(sl-price)
+                        signals.append((stock,direction,row,momentum))
 
-                        msg=f"""
+                    except Exception as e:
+
+                        print("Error:",stock,e)
+
+                # rank by momentum
+                signals.sort(key=lambda x:x[3],reverse=True)
+
+                signals=signals[:3]
+
+                for stock,direction,row,momentum in signals:
+
+                    price=row["Close"]
+
+                    if direction=="BUY":
+
+                        sl=price-1.2*row["atr"]
+
+                        target=price+RR_RATIO*(price-sl)
+
+                    else:
+
+                        sl=price+1.2*row["atr"]
+
+                        target=price-RR_RATIO*(sl-price)
+
+                    print("SIGNAL:",stock,direction)
+
+                    msg=f"""
 {direction} SIGNAL
 
 Stock: {stock}
 Entry: {round(price,2)}
 SL: {round(sl,2)}
 Target: {round(target,2)}
-Market Trend: {market_trend}
 """
 
-                        print("Signal:",stock,direction)
+                    send_telegram(msg)
 
-                        send_telegram(msg)
+                print("\nSCAN SUMMARY")
+                print("Stocks scanned:",scanned)
+                print("Signals found:",len(signals))
 
-                    except Exception as e:
+                last_scan=time.time()
 
-                        print("Stock error:",stock,e)
-
-                print("\nScan complete. Stocks scanned:",scanned)
-
-                next_scan=now+timedelta(minutes=15)
+                print("Next scan in 15 minutes")
 
             time.sleep(5)
 
         except Exception as e:
 
-            print("Main loop error:",e)
+            print("Main error:",e)
 
             time.sleep(10)
+
 
 # ================= BACKTEST =================
 
 def backtest():
 
-    capital=START_CAPITAL
-    wins=losses=total=0
-    gross_profit=gross_loss=0
-
-    market_trend=get_market_trend()
+    print("Running Backtest")
 
     data=download_batch()
 
+    signals=0
+
     for stock in stocks:
 
-        df=data[stock].copy()
+        try:
 
-        if df.empty:
-            continue
+            df=data[stock]
 
-        df=df.astype(float)
-
-        df=add_indicators(df)
-
-        df=df.tail(45*25)
-
-        for i in range(len(df)-10):
-
-            row=df.iloc[i]
-
-            direction,_=check_entry(row,market_trend)
-
-            if direction is None:
+            if df.empty:
                 continue
 
-            price=row["Close"]
+            df=df.astype(float)
 
-            if direction=="BUY":
-                sl=price-1.2*row["atr"]
-                target=price+RR_RATIO*(price-sl)
-            else:
-                sl=price+1.2*row["atr"]
-                target=price-RR_RATIO*(sl-price)
+            df=add_indicators(df)
 
-            risk_amt=capital*RISK_PER_TRADE
-            qty=risk_amt/abs(price-sl)
+            for i in range(len(df)-10):
 
-            future=df.iloc[i+1:i+11]
+                row=df.iloc[i]
 
-            result=None
+                result=check_entry(row,"BULL")
 
-            for _,f in future.iterrows():
+                if result:
 
-                if direction=="BUY":
-                    if f["Low"]<=sl:
-                        result="SL";break
-                    if f["High"]>=target:
-                        result="TARGET";break
-                else:
-                    if f["High"]>=sl:
-                        result="SL";break
-                    if f["Low"]<=target:
-                        result="TARGET";break
+                    signals+=1
 
-            if result:
+        except:
+            pass
 
-                total+=1
+    print("Backtest signals:",signals)
 
-                if result=="TARGET":
-
-                    profit=qty*abs(target-price)
-
-                    capital+=profit
-                    gross_profit+=profit
-                    wins+=1
-
-                else:
-
-                    loss=qty*abs(price-sl)
-
-                    capital-=loss
-                    gross_loss+=loss
-                    losses+=1
-
-    print("\n===== BACKTEST RESULTS =====")
-
-    print("Total Trades:",total)
-    print("Wins:",wins)
-    print("Losses:",losses)
-
-    if total>0:
-        print("Win Rate:",round(wins/total*100,2),"%")
-        print("Profit Factor:",round(gross_profit/gross_loss,2))
-
-    print("Final Capital:",round(capital,2))
 
 # ================= START =================
 
 if __name__=="__main__":
 
     if MODE=="LIVE":
+
         run_live()
+
     else:
+
         backtest()
