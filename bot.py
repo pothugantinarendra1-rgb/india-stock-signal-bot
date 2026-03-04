@@ -7,17 +7,21 @@ import time
 from datetime import datetime
 import pytz
 
+# ================= CONFIG =================
+
 SCAN_INTERVAL = 900
 RR = 2
 START_CAPITAL = 100000
 RISK = 0.01
 
-BOT_TOKEN=os.getenv("BOT_TOKEN")
-CHAT_ID=os.getenv("CHAT_ID")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
 
-IST=pytz.timezone("Asia/Kolkata")
+IST = pytz.timezone("Asia/Kolkata")
 
-stocks=[
+# ================= STOCK LIST =================
+
+stocks = [
 "RELIANCE.NS","TCS.NS","INFY.NS","HDFCBANK.NS","ICICIBANK.NS",
 "SBIN.NS","ITC.NS","LT.NS","AXISBANK.NS","KOTAKBANK.NS",
 "BAJFINANCE.NS","ASIANPAINT.NS","TITAN.NS","MARUTI.NS",
@@ -30,6 +34,8 @@ stocks=[
 "AUROPHARMA.NS","LUPIN.NS","ALKEM.NS","TORNTPHARM.NS"
 ]
 
+# ================= TELEGRAM =================
+
 def send(msg):
     if BOT_TOKEN and CHAT_ID:
         try:
@@ -38,14 +44,25 @@ def send(msg):
         except:
             pass
 
+
+# ================= DATA CLEANER =================
+
 def clean(df):
+
+    if df is None or df.empty:
+        return None
+
     if isinstance(df.columns,pd.MultiIndex):
         df.columns=df.columns.get_level_values(0)
 
-    for c in ["Open","High","Low","Close","Volume"]:
-        if c not in df.columns:
+    required=["Open","High","Low","Close","Volume"]
+
+    for col in required:
+
+        if col not in df.columns:
             return None
-        df[c]=pd.to_numeric(df[c],errors="coerce")
+
+        df[col]=pd.to_numeric(df[col],errors="coerce")
 
     df=df.dropna()
 
@@ -53,6 +70,9 @@ def clean(df):
         return None
 
     return df
+
+
+# ================= INDICATORS =================
 
 def indicators(df):
 
@@ -69,28 +89,53 @@ def indicators(df):
 
     df["atr"]=ta.volatility.AverageTrueRange(high,low,close,14).average_true_range()
 
-    df["vwap"]=ta.volume.VolumeWeightedAveragePrice(high,low,close,df["Volume"]).volume_weighted_average_price()
+    df["vwap"]=ta.volume.VolumeWeightedAveragePrice(
+        high,low,close,df["Volume"]
+    ).volume_weighted_average_price()
 
     df["vol_avg"]=df["Volume"].rolling(20).mean()
     df["rel_vol"]=df["Volume"]/df["vol_avg"]
-
-    df["returns"]=close.pct_change()
 
     df.dropna(inplace=True)
 
     return df
 
+
+# ================= MARKET TREND =================
+
+last_trend_update=0
+cached_trend="NONE"
+
 def market_trend():
+
+    global last_trend_update,cached_trend
+
+    if time.time()-last_trend_update<1800:
+        return cached_trend
 
     df=yf.download("^NSEI",period="60d",interval="60m",progress=False)
 
     df=clean(df)
-    df=indicators(df)
 
-    if df["ema20"].iloc[-1]>df["ema50"].iloc[-1]:
-        return "BULL"
+    if df is None:
+        return "NONE"
 
-    return "BEAR"
+    close=df["Close"]
+
+    ema20=ta.trend.EMAIndicator(close,20).ema_indicator()
+    ema50=ta.trend.EMAIndicator(close,50).ema_indicator()
+
+    if ema20.iloc[-1]>ema50.iloc[-1]:
+        cached_trend="BULL"
+    else:
+        cached_trend="BEAR"
+
+    last_trend_update=time.time()
+
+    return cached_trend
+
+
+# ================= SIGNAL =================
 
 def signal(row,trend):
 
@@ -112,24 +157,33 @@ def signal(row,trend):
 
     return None
 
+
+# ================= BACKTEST =================
+
 def backtest():
 
-    print("\nRunning Institutional Backtest\n")
+    print("\nRunning Backtest\n")
 
     capital=START_CAPITAL
-    trades=0
     wins=0
     losses=0
+    trades=0
 
     trend=market_trend()
 
-    data=yf.download(" ".join(stocks),period="45d",interval="15m",group_by="ticker",progress=False)
+    data=yf.download(
+        tickers=" ".join(stocks),
+        period="45d",
+        interval="15m",
+        group_by="ticker",
+        progress=False
+    )
 
-    for s in stocks:
+    for stock in stocks:
 
         try:
 
-            df=data[s]
+            df=data[stock]
 
             df=clean(df)
 
@@ -155,7 +209,6 @@ def backtest():
                 if direction=="BUY":
                     sl=entry-1.5*atr
                     tp=entry+RR*(entry-sl)
-
                 else:
                     sl=entry+1.5*atr
                     tp=entry-RR*(sl-entry)
@@ -185,12 +238,9 @@ def backtest():
                             break
 
                 if result=="TP":
-
                     wins+=1
                     capital+=capital*RISK*RR
-
                 else:
-
                     losses+=1
                     capital-=capital*RISK
 
@@ -207,9 +257,12 @@ def backtest():
     print("ProfitFactor:",round(pf,2))
     print("FinalCapital:",round(capital,2))
 
+
+# ================= LIVE SCANNER =================
+
 def live():
 
-    print("\nInstitutional Scanner Started\n")
+    print("\nLive Scanner Started\n")
 
     while True:
 
@@ -225,15 +278,21 @@ def live():
 
         trend=market_trend()
 
-        data=yf.download(" ".join(stocks),period="5d",interval="15m",group_by="ticker",progress=False)
+        data=yf.download(
+            tickers=" ".join(stocks),
+            period="5d",
+            interval="15m",
+            group_by="ticker",
+            progress=False
+        )
 
         candidates=[]
 
-        for s in stocks:
+        for stock in stocks:
 
             try:
 
-                df=data[s]
+                df=data[stock]
 
                 df=clean(df)
 
@@ -250,7 +309,7 @@ def live():
 
                     score=row["rsi"]+row["adx"]+row["rel_vol"]
 
-                    candidates.append((s,direction,row,score))
+                    candidates.append((stock,direction,row,score))
 
             except:
                 continue
@@ -259,9 +318,9 @@ def live():
 
         candidates=candidates[:3]
 
-        for c in candidates:
+        for s in candidates:
 
-            s,dir,row,_=c
+            stock,dir,row,_=s
 
             entry=row["Close"]
             atr=row["atr"]
@@ -269,24 +328,27 @@ def live():
             if dir=="BUY":
                 sl=entry-1.5*atr
                 tp=entry+RR*(entry-sl)
-
             else:
                 sl=entry+1.5*atr
                 tp=entry-RR*(sl-entry)
 
             msg=f"""
-{dir} {s}
+{dir} {stock}
 
 Entry: {round(entry,2)}
-StopLoss: {round(sl,2)}
+Stop Loss: {round(sl,2)}
 Target: {round(tp,2)}
-RR:1:{RR}
+RR: 1:{RR}
 """
 
             print(msg)
+
             send(msg)
 
         time.sleep(SCAN_INTERVAL)
+
+
+# ================= START =================
 
 if __name__=="__main__":
 
