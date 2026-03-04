@@ -1,157 +1,167 @@
 import yfinance as yf
 import pandas as pd
-import requests
+import ta
 import numpy as np
 import time
+import requests
 from datetime import datetime
 import pytz
 
-IST=pytz.timezone("Asia/Kolkata")
+# CONFIG
 
 RR=2
 MAX_TRADES=3
 SCAN_INTERVAL=600
+START_CAPITAL=100000
+RISK=0.01
+
+IST=pytz.timezone("Asia/Kolkata")
 
 stocks=[
 "RELIANCE.NS","HDFCBANK.NS","ICICIBANK.NS","TCS.NS","INFY.NS",
 "SBIN.NS","LT.NS","AXISBANK.NS","KOTAKBANK.NS","ITC.NS",
 "BAJFINANCE.NS","TITAN.NS","ASIANPAINT.NS","MARUTI.NS",
+"ULTRACEMCO.NS","JSWSTEEL.NS","TATASTEEL.NS","HINDALCO.NS",
 "HAL.NS","BEL.NS","TRENT.NS","POLYCAB.NS","PERSISTENT.NS",
 "COFORGE.NS","MPHASIS.NS","SRF.NS","HAVELLS.NS","CUMMINSIND.NS",
 "SIEMENS.NS","ABB.NS","APLAPOLLO.NS","DIXON.NS","PAGEIND.NS"
 ]
 
-# ================= MARKET BIAS =================
+# CLEAN DATA
 
-def market_bias():
+def clean(df):
 
-    df=yf.download("^NSEI",period="5d",interval="15m")
+    if df is None or df.empty:
+        return None
+
+    if isinstance(df.columns,pd.MultiIndex):
+        df.columns=df.columns.get_level_values(0)
+
+    for c in ["Open","High","Low","Close","Volume"]:
+        if c not in df.columns:
+            return None
+        df[c]=pd.to_numeric(df[c],errors="coerce")
+
+    df=df.dropna()
+
+    if len(df)<50:
+        return None
+
+    return df
+
+# MARKET TREND
+
+def market_trend():
+
+    df=yf.download("^NSEI",period="5d",interval="15m",progress=False)
+
+    df=clean(df)
 
     close=df["Close"]
 
-    vwap=(close*df["Volume"]).cumsum()/df["Volume"].cumsum()
+    ema20=ta.trend.EMAIndicator(close,20).ema_indicator()
+    ema50=ta.trend.EMAIndicator(close,50).ema_indicator()
 
-    if close.iloc[-1]>vwap.iloc[-1]:
-
+    if float(ema20.iloc[-1])>float(ema50.iloc[-1]):
         return "BULL"
 
     return "BEAR"
 
-# ================= FVG DETECTION =================
+# RANK STOCKS
 
-def find_fvg(df):
+def rank_stock(df,nifty_return):
 
-    gaps=[]
+    close=df["Close"]
 
-    for i in range(2,len(df)):
+    rsi=ta.momentum.RSIIndicator(close,14).rsi().iloc[-1]
 
-        c1=df.iloc[i-2]
-        c3=df.iloc[i]
+    adx=ta.trend.ADXIndicator(
+        df["High"],df["Low"],df["Close"],14
+    ).adx().iloc[-1]
 
-        if c1["High"]<c3["Low"]:
+    returns=close.pct_change().iloc[-1]
 
-            gaps.append(("bull",c1["High"],c3["Low"]))
+    rel_strength=returns-nifty_return
 
-        if c1["Low"]>c3["High"]:
+    vol_avg=df["Volume"].rolling(20).mean().iloc[-1]
 
-            gaps.append(("bear",c3["High"],c1["Low"]))
-
-    return gaps
-
-# ================= LIQUIDITY SWEEP =================
-
-def liquidity_sweep(df):
-
-    prev_high=df["High"].rolling(20).max().iloc[-2]
-
-    prev_low=df["Low"].rolling(20).min().iloc[-2]
-
-    last=df.iloc[-1]
-
-    if last["Low"]<prev_low:
-
-        return "sell_liquidity"
-
-    if last["High"]>prev_high:
-
-        return "buy_liquidity"
-
-    return None
-
-# ================= SIGNAL =================
-
-def signal(df,bias):
-
-    sweep=liquidity_sweep(df)
-
-    gaps=find_fvg(df)
-
-    if not gaps:
+    if vol_avg==0:
         return None
 
-    last=df.iloc[-1]
+    rel_vol=df["Volume"].iloc[-1]/vol_avg
 
-    for g in gaps[-3:]:
+    score=rsi+adx+(rel_vol*10)+(rel_strength*100)
 
-        direction,low,high=g
+    return score
 
-        if direction=="bull" and bias=="BULL":
+# TRADE SIGNAL
 
-            if low<last["Close"]<high:
+def signal(df,trend):
 
-                sl=last["Low"]
+    close=df["Close"]
 
-                entry=last["Close"]
+    rsi=ta.momentum.RSIIndicator(close,14).rsi().iloc[-1]
 
-                tp=entry+RR*(entry-sl)
+    atr=ta.volatility.AverageTrueRange(
+        df["High"],df["Low"],df["Close"],14
+    ).average_true_range().iloc[-1]
 
-                return ("BUY",entry,sl,tp)
+    high=df["High"].rolling(20).max().iloc[-1]
 
-        if direction=="bear" and bias=="BEAR":
+    entry=close.iloc[-1]
 
-            if low<last["Close"]<high:
+    if trend=="BULL" and rsi>55:
 
-                sl=last["High"]
+        sl=entry-atr
+        tp=entry+RR*(entry-sl)
 
-                entry=last["Close"]
+        return ("BUY",entry,sl,tp)
 
-                tp=entry-RR*(sl-entry)
+    if trend=="BEAR" and rsi<45:
 
-                return ("SELL",entry,sl,tp)
+        sl=entry+atr
+        tp=entry-RR*(sl-entry)
+
+        return ("SELL",entry,sl,tp)
 
     return None
 
-# ================= BACKTEST =================
+# BACKTEST
 
 def backtest():
 
+    print("\nRunning Quant Backtest\n")
+
+    capital=START_CAPITAL
     trades=0
     wins=0
     losses=0
 
-    bias=market_bias()
+    trend=market_trend()
 
     for s in stocks:
 
-        df=yf.download(s,period="45d",interval="15m")
+        df=yf.download(s,period="45d",interval="15m",progress=False)
 
-        if df.empty:
+        df=clean(df)
+
+        if df is None:
             continue
 
         for i in range(30,len(df)-5):
 
             sub=df.iloc[:i]
 
-            sig=signal(sub,bias)
+            sig=signal(sub,trend)
 
             if not sig:
                 continue
 
             direction,entry,sl,tp=sig
 
-            future=df.iloc[i:i+5]
-
             trades+=1
+
+            future=df.iloc[i:i+5]
 
             result="SL"
 
@@ -176,53 +186,90 @@ def backtest():
                         break
 
             if result=="TP":
+
                 wins+=1
+                capital+=capital*RISK*RR
+
             else:
+
                 losses+=1
+                capital-=capital*RISK
 
     winrate=(wins/trades*100) if trades else 0
+    pf=(wins*RR)/losses if losses else 0
 
     print("Trades:",trades)
     print("Wins:",wins)
     print("Losses:",losses)
     print("WinRate:",round(winrate,2))
+    print("ProfitFactor:",round(pf,2))
+    print("FinalCapital:",round(capital,2))
 
-# ================= LIVE SCANNER =================
+# LIVE SCANNER
 
 def live():
 
-    print("Smart Money Scanner Running")
+    print("\nInstitutional Quant Scanner Running\n")
 
     while True:
 
-        bias=market_bias()
+        trend=market_trend()
 
-        signals=[]
+        nifty=yf.download("^NSEI",period="2d",interval="15m",progress=False)
+
+        nifty=clean(nifty)
+
+        nifty_return=nifty["Close"].pct_change().iloc[-1]
+
+        ranking=[]
 
         for s in stocks:
 
-            df=yf.download(s,period="1d",interval="5m")
+            df=yf.download(s,period="5d",interval="15m",progress=False)
 
-            if df.empty:
+            df=clean(df)
+
+            if df is None:
                 continue
 
-            sig=signal(df,bias)
+            score=rank_stock(df,nifty_return)
+
+            if score:
+
+                ranking.append((s,score))
+
+        ranking=sorted(ranking,key=lambda x:x[1],reverse=True)
+
+        top=ranking[:10]
+
+        trades=[]
+
+        for s,_ in top:
+
+            df=yf.download(s,period="1d",interval="5m",progress=False)
+
+            df=clean(df)
+
+            if df is None:
+                continue
+
+            sig=signal(df,trend)
 
             if sig:
 
                 direction,entry,sl,tp=sig
 
-                signals.append((s,direction,entry,sl,tp))
+                trades.append((s,direction,entry,sl,tp))
 
-        signals=signals[:MAX_TRADES]
+        trades=trades[:MAX_TRADES]
 
-        for s,d,e,sl,tp in signals:
+        for s,d,e,sl,tp in trades:
 
             print(s,d,e,sl,tp)
 
         time.sleep(SCAN_INTERVAL)
 
-# ================= START =================
+# START
 
 if __name__=="__main__":
 
