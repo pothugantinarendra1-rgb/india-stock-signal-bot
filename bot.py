@@ -4,28 +4,20 @@ import ta
 import requests
 import os
 import time
-import pytz
 from datetime import datetime
+import pytz
 
-# =========================
-# CONFIG
-# =========================
-
-RR = 2
 SCAN_INTERVAL = 900
+RR = 2
 START_CAPITAL = 100000
-RISK_PER_TRADE = 0.01
+RISK = 0.01
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHAT_ID = os.getenv("CHAT_ID")
+BOT_TOKEN=os.getenv("BOT_TOKEN")
+CHAT_ID=os.getenv("CHAT_ID")
 
-IST = pytz.timezone("Asia/Kolkata")
+IST=pytz.timezone("Asia/Kolkata")
 
-# =========================
-# NSE LARGE + MIDCAP LIST
-# =========================
-
-stocks = [
+stocks=[
 "RELIANCE.NS","TCS.NS","INFY.NS","HDFCBANK.NS","ICICIBANK.NS",
 "SBIN.NS","ITC.NS","LT.NS","AXISBANK.NS","KOTAKBANK.NS",
 "BAJFINANCE.NS","ASIANPAINT.NS","TITAN.NS","MARUTI.NS",
@@ -38,53 +30,31 @@ stocks = [
 "AUROPHARMA.NS","LUPIN.NS","ALKEM.NS","TORNTPHARM.NS"
 ]
 
-# =========================
-# TELEGRAM
-# =========================
-
 def send(msg):
-
     if BOT_TOKEN and CHAT_ID:
-
         try:
-
             url=f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-
             requests.post(url,data={"chat_id":CHAT_ID,"text":msg})
-
         except:
-
             pass
 
+def clean(df):
+    if isinstance(df.columns,pd.MultiIndex):
+        df.columns=df.columns.get_level_values(0)
 
-# =========================
-# DOWNLOAD DATA
-# =========================
+    for c in ["Open","High","Low","Close","Volume"]:
+        if c not in df.columns:
+            return None
+        df[c]=pd.to_numeric(df[c],errors="coerce")
 
-def get_data(symbol,period="60d",interval="15m"):
+    df=df.dropna()
 
-    df=yf.download(symbol,period=period,interval=interval,progress=False)
-
-    if df.empty:
+    if len(df)<50:
         return None
-
-    df.columns=[c for c in df.columns]
-
-    df["Close"]=pd.to_numeric(df["Close"],errors="coerce")
-    df["High"]=pd.to_numeric(df["High"],errors="coerce")
-    df["Low"]=pd.to_numeric(df["Low"],errors="coerce")
-    df["Volume"]=pd.to_numeric(df["Volume"],errors="coerce")
-
-    df.dropna(inplace=True)
 
     return df
 
-
-# =========================
-# INDICATORS
-# =========================
-
-def add_indicators(df):
+def indicators(df):
 
     close=df["Close"]
     high=df["High"]
@@ -99,41 +69,28 @@ def add_indicators(df):
 
     df["atr"]=ta.volatility.AverageTrueRange(high,low,close,14).average_true_range()
 
-    df["vwap"]=ta.volume.VolumeWeightedAveragePrice(
-        high,low,close,df["Volume"]
-    ).volume_weighted_average_price()
+    df["vwap"]=ta.volume.VolumeWeightedAveragePrice(high,low,close,df["Volume"]).volume_weighted_average_price()
 
     df["vol_avg"]=df["Volume"].rolling(20).mean()
     df["rel_vol"]=df["Volume"]/df["vol_avg"]
+
+    df["returns"]=close.pct_change()
 
     df.dropna(inplace=True)
 
     return df
 
-
-# =========================
-# MARKET TREND
-# =========================
-
 def market_trend():
 
-    df=get_data("^NSEI","60d","60m")
+    df=yf.download("^NSEI",period="60d",interval="60m",progress=False)
 
-    if df is None:
-        return "NONE"
-
-    df=add_indicators(df)
+    df=clean(df)
+    df=indicators(df)
 
     if df["ema20"].iloc[-1]>df["ema50"].iloc[-1]:
-
         return "BULL"
 
     return "BEAR"
-
-
-# =========================
-# SIGNAL LOGIC
-# =========================
 
 def signal(row,trend):
 
@@ -145,200 +102,191 @@ def signal(row,trend):
 
     if trend=="BULL":
 
-        if row["Close"]>row["vwap"] and row["rsi"]>60 and row["ema20"]>row["ema50"]:
-
+        if row["Close"]>row["vwap"] and row["ema20"]>row["ema50"] and row["rsi"]>60:
             return "BUY"
 
     if trend=="BEAR":
 
-        if row["Close"]<row["vwap"] and row["rsi"]<40 and row["ema20"]<row["ema50"]:
-
+        if row["Close"]<row["vwap"] and row["ema20"]<row["ema50"] and row["rsi"]<40:
             return "SELL"
 
     return None
 
-
-# =========================
-# BACKTEST ENGINE
-# =========================
-
 def backtest():
 
-    print("\nRunning Backtest...\n")
+    print("\nRunning Institutional Backtest\n")
 
     capital=START_CAPITAL
+    trades=0
     wins=0
     losses=0
-    trades=0
 
     trend=market_trend()
 
-    for stock in stocks:
+    data=yf.download(" ".join(stocks),period="45d",interval="15m",group_by="ticker",progress=False)
 
-        df=get_data(stock,"45d","15m")
+    for s in stocks:
 
-        if df is None:
-            continue
+        try:
 
-        df=add_indicators(df)
+            df=data[s]
 
-        for i in range(len(df)-10):
+            df=clean(df)
 
-            row=df.iloc[i]
-
-            direction=signal(row,trend)
-
-            if direction is None:
+            if df is None:
                 continue
 
-            trades+=1
+            df=indicators(df)
 
-            entry=row["Close"]
-            atr=row["atr"]
+            for i in range(len(df)-10):
 
-            if direction=="BUY":
+                row=df.iloc[i]
 
-                sl=entry-1.5*atr
-                target=entry+RR*(entry-sl)
+                direction=signal(row,trend)
 
-            else:
+                if direction is None:
+                    continue
 
-                sl=entry+1.5*atr
-                target=entry-RR*(sl-entry)
+                trades+=1
 
-            future=df.iloc[i+1:i+10]
-
-            result="SL"
-
-            for _,f in future.iterrows():
+                entry=row["Close"]
+                atr=row["atr"]
 
                 if direction=="BUY":
+                    sl=entry-1.5*atr
+                    tp=entry+RR*(entry-sl)
 
-                    if f["Low"]<=sl:
-                        break
+                else:
+                    sl=entry+1.5*atr
+                    tp=entry-RR*(sl-entry)
 
-                    if f["High"]>=target:
+                future=df.iloc[i+1:i+10]
 
-                        result="TP"
-                        break
+                result="SL"
+
+                for _,f in future.iterrows():
+
+                    if direction=="BUY":
+
+                        if f["Low"]<=sl:
+                            break
+
+                        if f["High"]>=tp:
+                            result="TP"
+                            break
+
+                    else:
+
+                        if f["High"]>=sl:
+                            break
+
+                        if f["Low"]<=tp:
+                            result="TP"
+                            break
+
+                if result=="TP":
+
+                    wins+=1
+                    capital+=capital*RISK*RR
 
                 else:
 
-                    if f["High"]>=sl:
-                        break
+                    losses+=1
+                    capital-=capital*RISK
 
-                    if f["Low"]<=target:
-
-                        result="TP"
-                        break
-
-            if result=="TP":
-
-                wins+=1
-                capital+=capital*RISK_PER_TRADE*RR
-
-            else:
-
-                losses+=1
-                capital-=capital*RISK_PER_TRADE
+        except:
+            continue
 
     winrate=(wins/trades*100) if trades else 0
     pf=(wins*RR)/losses if losses else 0
 
-    print("Backtest Results\n")
     print("Trades:",trades)
     print("Wins:",wins)
     print("Losses:",losses)
-    print("Win Rate:",round(winrate,2),"%")
-    print("Profit Factor:",round(pf,2))
-    print("Final Capital:",round(capital,2))
-
-
-# =========================
-# LIVE SCANNER
-# =========================
+    print("WinRate:",round(winrate,2))
+    print("ProfitFactor:",round(pf,2))
+    print("FinalCapital:",round(capital,2))
 
 def live():
 
-    print("\nLive Scanner Started\n")
+    print("\nInstitutional Scanner Started\n")
 
     while True:
 
         now=datetime.now(IST)
 
         if now.weekday()>=5:
-
             time.sleep(60)
             continue
 
         if not (9<=now.hour<=15):
-
             time.sleep(60)
             continue
 
         trend=market_trend()
 
+        data=yf.download(" ".join(stocks),period="5d",interval="15m",group_by="ticker",progress=False)
+
         candidates=[]
 
-        for stock in stocks:
+        for s in stocks:
 
-            df=get_data(stock,"5d","15m")
+            try:
 
-            if df is None:
+                df=data[s]
+
+                df=clean(df)
+
+                if df is None:
+                    continue
+
+                df=indicators(df)
+
+                row=df.iloc[-1]
+
+                direction=signal(row,trend)
+
+                if direction:
+
+                    score=row["rsi"]+row["adx"]+row["rel_vol"]
+
+                    candidates.append((s,direction,row,score))
+
+            except:
                 continue
-
-            df=add_indicators(df)
-
-            row=df.iloc[-1]
-
-            direction=signal(row,trend)
-
-            if direction:
-
-                score=row["rsi"]+row["adx"]
-
-                candidates.append((stock,direction,row,score))
 
         candidates.sort(key=lambda x:x[3],reverse=True)
 
         candidates=candidates[:3]
 
-        for s in candidates:
+        for c in candidates:
 
-            stock,dir,row,_=s
+            s,dir,row,_=c
 
             entry=row["Close"]
             atr=row["atr"]
 
             if dir=="BUY":
-
                 sl=entry-1.5*atr
-                target=entry+RR*(entry-sl)
+                tp=entry+RR*(entry-sl)
 
             else:
-
                 sl=entry+1.5*atr
-                target=entry-RR*(sl-entry)
+                tp=entry-RR*(sl-entry)
 
             msg=f"""
-{dir} {stock}
+{dir} {s}
 
 Entry: {round(entry,2)}
-Stop Loss: {round(sl,2)}
-Target: {round(target,2)}
-RR: 1:{RR}
+StopLoss: {round(sl,2)}
+Target: {round(tp,2)}
+RR:1:{RR}
 """
 
             print(msg)
-
             send(msg)
 
         time.sleep(SCAN_INTERVAL)
-
-
-# =========================
-# START BOT
-# =========================
 
 if __name__=="__main__":
 
