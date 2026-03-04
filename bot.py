@@ -2,24 +2,28 @@ import yfinance as yf
 import pandas as pd
 import ta
 import requests
-import time
 import os
+import time
 import pytz
 from datetime import datetime
 
-# ================= CONFIG =================
+# =========================
+# CONFIG
+# =========================
 
+RR = 2
 SCAN_INTERVAL = 900
-RR_RATIO = 2
-RISK = 0.01
 START_CAPITAL = 100000
+RISK_PER_TRADE = 0.01
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
 IST = pytz.timezone("Asia/Kolkata")
 
-# ================= STOCK LIST =================
+# =========================
+# NSE LARGE + MIDCAP LIST
+# =========================
 
 stocks = [
 "RELIANCE.NS","TCS.NS","INFY.NS","HDFCBANK.NS","ICICIBANK.NS",
@@ -27,15 +31,16 @@ stocks = [
 "BAJFINANCE.NS","ASIANPAINT.NS","TITAN.NS","MARUTI.NS",
 "ULTRACEMCO.NS","JSWSTEEL.NS","TATASTEEL.NS","HINDALCO.NS",
 "ADANIPORTS.NS","DRREDDY.NS","SUNPHARMA.NS","CIPLA.NS",
-"DIVISLAB.NS","HDFCLIFE.NS","SBILIFE.NS","TATAMOTORS.NS",
-"HAL.NS","BEL.NS","POLYCAB.NS","TRENT.NS","SRF.NS","PIIND.NS",
-"MPHASIS.NS","COFORGE.NS","LTIM.NS","PERSISTENT.NS",
-"BALKRISIND.NS","DEEPAKNTR.NS","AUBANK.NS","INDIGO.NS",
-"VOLTAS.NS","HAVELLS.NS","CUMMINSIND.NS","TORNTPHARM.NS",
-"LUPIN.NS","ALKEM.NS","AUROPHARMA.NS"
+"DIVISLAB.NS","SBILIFE.NS","HDFCLIFE.NS","TATAMOTORS.NS",
+"HAL.NS","BEL.NS","TRENT.NS","POLYCAB.NS","SRF.NS",
+"MPHASIS.NS","COFORGE.NS","PERSISTENT.NS","LTIM.NS",
+"VOLTAS.NS","HAVELLS.NS","CUMMINSIND.NS","INDIGO.NS",
+"AUROPHARMA.NS","LUPIN.NS","ALKEM.NS","TORNTPHARM.NS"
 ]
 
-# ================= TELEGRAM =================
+# =========================
+# TELEGRAM
+# =========================
 
 def send(msg):
 
@@ -52,33 +57,38 @@ def send(msg):
             pass
 
 
-# ================= DATA FIX =================
+# =========================
+# DOWNLOAD DATA
+# =========================
 
-def normalize(df):
+def get_data(symbol,period="60d",interval="15m"):
 
-    if isinstance(df.columns,pd.MultiIndex):
+    df=yf.download(symbol,period=period,interval=interval,progress=False)
 
-        df.columns=df.columns.get_level_values(0)
+    if df.empty:
+        return None
 
-    for col in ["Open","High","Low","Close","Volume"]:
+    df.columns=[c for c in df.columns]
 
-        df[col]=pd.to_numeric(df[col],errors="coerce")
+    df["Close"]=pd.to_numeric(df["Close"],errors="coerce")
+    df["High"]=pd.to_numeric(df["High"],errors="coerce")
+    df["Low"]=pd.to_numeric(df["Low"],errors="coerce")
+    df["Volume"]=pd.to_numeric(df["Volume"],errors="coerce")
 
-    df=df.dropna()
+    df.dropna(inplace=True)
 
     return df
 
 
-# ================= INDICATORS =================
+# =========================
+# INDICATORS
+# =========================
 
-def indicators(df):
-
-    df=normalize(df)
+def add_indicators(df):
 
     close=df["Close"]
     high=df["High"]
     low=df["Low"]
-    vol=df["Volume"]
 
     df["ema20"]=ta.trend.EMAIndicator(close,20).ema_indicator()
     df["ema50"]=ta.trend.EMAIndicator(close,50).ema_indicator()
@@ -89,158 +99,153 @@ def indicators(df):
 
     df["atr"]=ta.volatility.AverageTrueRange(high,low,close,14).average_true_range()
 
-    df["vol_avg"]=vol.rolling(20).mean()
+    df["vwap"]=ta.volume.VolumeWeightedAveragePrice(
+        high,low,close,df["Volume"]
+    ).volume_weighted_average_price()
 
-    df["rel_vol"]=vol/df["vol_avg"]
+    df["vol_avg"]=df["Volume"].rolling(20).mean()
+    df["rel_vol"]=df["Volume"]/df["vol_avg"]
 
     df.dropna(inplace=True)
 
     return df
 
 
-# ================= MARKET TREND =================
+# =========================
+# MARKET TREND
+# =========================
 
 def market_trend():
 
-    df=yf.download("^NSEI",period="60d",interval="60m",progress=False)
+    df=get_data("^NSEI","60d","60m")
 
-    df=normalize(df)
+    if df is None:
+        return "NONE"
 
-    close=df["Close"]
+    df=add_indicators(df)
 
-    ema20=ta.trend.EMAIndicator(close,20).ema_indicator()
-    ema50=ta.trend.EMAIndicator(close,50).ema_indicator()
-
-    if ema20.iloc[-1]>ema50.iloc[-1]:
+    if df["ema20"].iloc[-1]>df["ema50"].iloc[-1]:
 
         return "BULL"
 
     return "BEAR"
 
 
-# ================= ENTRY =================
+# =========================
+# SIGNAL LOGIC
+# =========================
 
-def entry(row,trend):
+def signal(row,trend):
 
-    if row["rel_vol"]<2:
+    if row["rel_vol"]<1.5:
+        return None
 
+    if row["adx"]<20:
         return None
 
     if trend=="BULL":
 
-        if row["ema20"]<=row["ema50"]:
-            return None
+        if row["Close"]>row["vwap"] and row["rsi"]>60 and row["ema20"]>row["ema50"]:
 
-        if row["Close"]<row["ema20"]:
-            return None
+            return "BUY"
 
-        return "BUY"
+    if trend=="BEAR":
 
-    else:
+        if row["Close"]<row["vwap"] and row["rsi"]<40 and row["ema20"]<row["ema50"]:
 
-        if row["ema20"]>=row["ema50"]:
-            return None
+            return "SELL"
 
-        if row["Close"]>row["ema20"]:
-            return None
-
-        return "SELL"
+    return None
 
 
-# ================= BACKTEST =================
+# =========================
+# BACKTEST ENGINE
+# =========================
 
 def backtest():
 
-    print("\nRunning Backtest")
-
-    data=yf.download(
-        tickers=" ".join(stocks),
-        period="60d",
-        interval="15m",
-        group_by="ticker",
-        progress=False
-    )
+    print("\nRunning Backtest...\n")
 
     capital=START_CAPITAL
-
-    trades=0
     wins=0
     losses=0
+    trades=0
 
     trend=market_trend()
 
     for stock in stocks:
 
-        try:
+        df=get_data(stock,"45d","15m")
 
-            df=data[stock]
+        if df is None:
+            continue
 
-            df=indicators(df)
+        df=add_indicators(df)
 
-            for i in range(len(df)-10):
+        for i in range(len(df)-10):
 
-                row=df.iloc[i]
+            row=df.iloc[i]
 
-                direction=entry(row,trend)
+            direction=signal(row,trend)
 
-                if direction is None:
-                    continue
+            if direction is None:
+                continue
 
-                trades+=1
+            trades+=1
 
-                entry_price=row["Close"]
+            entry=row["Close"]
+            atr=row["atr"]
 
-                atr=row["atr"]
+            if direction=="BUY":
+
+                sl=entry-1.5*atr
+                target=entry+RR*(entry-sl)
+
+            else:
+
+                sl=entry+1.5*atr
+                target=entry-RR*(sl-entry)
+
+            future=df.iloc[i+1:i+10]
+
+            result="SL"
+
+            for _,f in future.iterrows():
 
                 if direction=="BUY":
 
-                    sl=entry_price-1.5*atr
-                    tp=entry_price+RR_RATIO*(entry_price-sl)
+                    if f["Low"]<=sl:
+                        break
+
+                    if f["High"]>=target:
+
+                        result="TP"
+                        break
 
                 else:
 
-                    sl=entry_price+1.5*atr
-                    tp=entry_price-RR_RATIO*(sl-entry_price)
+                    if f["High"]>=sl:
+                        break
 
-                future=df.iloc[i+1:i+10]
+                    if f["Low"]<=target:
 
-                result="SL"
+                        result="TP"
+                        break
 
-                for _,f in future.iterrows():
+            if result=="TP":
 
-                    if direction=="BUY":
+                wins+=1
+                capital+=capital*RISK_PER_TRADE*RR
 
-                        if f["Low"]<=sl: break
-                        if f["High"]>=tp:
-                            result="TP"
-                            break
+            else:
 
-                    else:
-
-                        if f["High"]>=sl: break
-                        if f["Low"]<=tp:
-                            result="TP"
-                            break
-
-                if result=="TP":
-
-                    wins+=1
-                    capital+=capital*RISK*RR_RATIO
-
-                else:
-
-                    losses+=1
-                    capital-=capital*RISK
-
-        except:
-
-            continue
+                losses+=1
+                capital-=capital*RISK_PER_TRADE
 
     winrate=(wins/trades*100) if trades else 0
+    pf=(wins*RR)/losses if losses else 0
 
-    pf=(wins*RR_RATIO)/losses if losses else 0
-
-    print("\nBacktest Results")
+    print("Backtest Results\n")
     print("Trades:",trades)
     print("Wins:",wins)
     print("Losses:",losses)
@@ -249,13 +254,13 @@ def backtest():
     print("Final Capital:",round(capital,2))
 
 
-# ================= LIVE =================
+# =========================
+# LIVE SCANNER
+# =========================
 
 def live():
 
-    print("\nInstitutional Scanner Started")
-
-    last=None
+    print("\nLive Scanner Started\n")
 
     while True:
 
@@ -266,67 +271,74 @@ def live():
             time.sleep(60)
             continue
 
-        if not(9<=now.hour<=15):
+        if not (9<=now.hour<=15):
 
             time.sleep(60)
             continue
 
-        if last is None or time.time()-last>SCAN_INTERVAL:
+        trend=market_trend()
 
-            trend=market_trend()
+        candidates=[]
 
-            data=yf.download(
-                tickers=" ".join(stocks),
-                period="5d",
-                interval="15m",
-                group_by="ticker",
-                progress=False
-            )
+        for stock in stocks:
 
-            candidates=[]
+            df=get_data(stock,"5d","15m")
 
-            for stock in stocks:
+            if df is None:
+                continue
 
-                try:
+            df=add_indicators(df)
 
-                    df=data[stock]
+            row=df.iloc[-1]
 
-                    df=indicators(df)
+            direction=signal(row,trend)
 
-                    row=df.iloc[-1]
+            if direction:
 
-                    direction=entry(row,trend)
+                score=row["rsi"]+row["adx"]
 
-                    if direction:
+                candidates.append((stock,direction,row,score))
 
-                        momentum=row["rsi"]+row["adx"]
+        candidates.sort(key=lambda x:x[3],reverse=True)
 
-                        candidates.append((stock,direction,row,momentum))
+        candidates=candidates[:3]
 
-                except:
+        for s in candidates:
 
-                    continue
+            stock,dir,row,_=s
 
-            candidates.sort(key=lambda x:x[3],reverse=True)
+            entry=row["Close"]
+            atr=row["atr"]
 
-            candidates=candidates[:5]
+            if dir=="BUY":
 
-            for s in candidates:
+                sl=entry-1.5*atr
+                target=entry+RR*(entry-sl)
 
-                stock,dir,row,_=s
+            else:
 
-                msg=f"{dir} {stock} Entry {round(row['Close'],2)}"
+                sl=entry+1.5*atr
+                target=entry-RR*(sl-entry)
 
-                print("Signal:",msg)
+            msg=f"""
+{dir} {stock}
 
-                send(msg)
+Entry: {round(entry,2)}
+Stop Loss: {round(sl,2)}
+Target: {round(target,2)}
+RR: 1:{RR}
+"""
 
-            last=time.time()
+            print(msg)
 
-        time.sleep(5)
+            send(msg)
+
+        time.sleep(SCAN_INTERVAL)
 
 
-# ================= START =================
+# =========================
+# START BOT
+# =========================
 
 if __name__=="__main__":
 
