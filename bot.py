@@ -2,9 +2,13 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import requests
-import time
 import pytz
+import time
 from datetime import datetime
+
+# =====================
+# CONFIG
+# =====================
 
 TELEGRAM_TOKEN="YOUR_TELEGRAM_TOKEN"
 CHAT_ID="YOUR_CHAT_ID"
@@ -29,29 +33,25 @@ STOCKS=[s for sector in SECTOR_STOCKS.values() for s in sector]
 
 last_signals={}
 
-# -----------------------
+# =====================
 # TELEGRAM
-# -----------------------
+# =====================
 
 def send_telegram(msg):
 
     url=f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 
-    payload={
-        "chat_id":CHAT_ID,
-        "text":msg
-    }
+    payload={"chat_id":CHAT_ID,"text":msg}
 
     requests.post(url,data=payload)
 
-# -----------------------
+# =====================
 # MARKET HOURS
-# -----------------------
+# =====================
 
 def market_open():
 
     india=pytz.timezone("Asia/Kolkata")
-
     now=datetime.now(india)
 
     if now.weekday()>=5:
@@ -62,11 +62,11 @@ def market_open():
 
     return start<=now<=end
 
-# -----------------------
+# =====================
 # DATA DOWNLOAD
-# -----------------------
+# =====================
 
-def download_data():
+def download_live_data():
 
     tickers=STOCKS+[NIFTY]
 
@@ -81,14 +81,13 @@ def download_data():
 
     return data
 
-# -----------------------
+# =====================
 # INDICATORS
-# -----------------------
+# =====================
 
 def add_vwap(df):
 
     tp=(df["High"]+df["Low"]+df["Close"])/3
-
     df["VWAP"]=(tp*df["Volume"]).cumsum()/df["Volume"].cumsum()
 
     return df
@@ -96,7 +95,6 @@ def add_vwap(df):
 def add_rel_volume(df):
 
     avg=df["Volume"].rolling(20).mean()
-
     df["RelVol"]=df["Volume"]/avg
 
     return df
@@ -113,9 +111,9 @@ def add_atr(df):
 
     return df
 
-# -----------------------
+# =====================
 # MARKET TREND
-# -----------------------
+# =====================
 
 def market_bias(df):
 
@@ -129,9 +127,9 @@ def market_bias(df):
 
     return "BEAR"
 
-# -----------------------
+# =====================
 # SCORE
-# -----------------------
+# =====================
 
 def score_stock(df,bias):
 
@@ -147,9 +145,9 @@ def score_stock(df,bias):
     if price>vwap:
         score+=20
 
-    rel_vol=float(df["RelVol"].iloc[-1])
+    relvol=float(df["RelVol"].iloc[-1])
 
-    if rel_vol>2:
+    if relvol>2:
         score+=20
 
     prev_high=float(df["High"].iloc[-20:-1].max())
@@ -172,13 +170,13 @@ def score_stock(df,bias):
 
     return score
 
-# -----------------------
-# LIVE SCAN
-# -----------------------
+# =====================
+# LIVE SCANNER
+# =====================
 
 def run_live():
 
-    data=download_data()
+    data=download_live_data()
 
     nifty=data[NIFTY]
 
@@ -197,7 +195,7 @@ def run_live():
 
             score=score_stock(df,bias)
 
-            if score<65:
+            if score<60:
                 continue
 
             price=float(df["Close"].iloc[-1])
@@ -236,7 +234,7 @@ def run_live():
         target=price*(1+TARGET) if signal=="BUY" else price*(1-TARGET)
 
         msg=f"""
-INSTITUTIONAL TRADE
+INSTITUTIONAL SIGNAL
 
 Stock: {symbol}
 Signal: {signal}
@@ -253,13 +251,104 @@ Time: {datetime.now()}
 
         print(msg)
 
-# -----------------------
+# =====================
+# BACKTEST
+# =====================
+
+def backtest_stock(symbol):
+
+    df=yf.download(symbol,period="30d",interval="5m",progress=False)
+
+    if len(df)<100:
+        return None
+
+    df=add_vwap(df)
+    df=add_rel_volume(df)
+    df=add_atr(df)
+
+    wins=0
+    losses=0
+
+    for i in range(50,len(df)-20):
+
+        price=float(df["Close"].iloc[i])
+
+        score=score_stock(df.iloc[:i],"BULL")
+
+        if score<60:
+            continue
+
+        entry=price
+
+        sl=entry*(1-STOPLOSS)
+        target=entry*(1+TARGET)
+
+        future=df.iloc[i+1:i+20]
+
+        if future["High"].max()>=target:
+
+            wins+=1
+
+        elif future["Low"].min()<=sl:
+
+            losses+=1
+
+    trades=wins+losses
+
+    if trades>0:
+
+        winrate=(wins/trades)*100
+
+    else:
+
+        winrate=0
+
+    return wins,losses,trades,winrate
+
+def run_backtest():
+
+    print("Running 30 day backtest")
+
+    total_wins=0
+    total_losses=0
+
+    for symbol in STOCKS:
+
+        r=backtest_stock(symbol)
+
+        if r:
+
+            wins,losses,trades,wr=r
+
+            print(symbol,"Trades:",trades,"Winrate:",round(wr,2))
+
+            total_wins+=wins
+            total_losses+=losses
+
+    total_trades=total_wins+total_losses
+
+    if total_trades>0:
+
+        winrate=(total_wins/total_trades)*100
+
+    else:
+
+        winrate=0
+
+    print("-------------")
+    print("PORTFOLIO REPORT")
+    print("Trades:",total_trades)
+    print("Wins:",total_wins)
+    print("Losses:",total_losses)
+    print("Winrate:",round(winrate,2))
+
+# =====================
 # BOT LOOP
-# -----------------------
+# =====================
 
 def run_bot():
 
-    print("BOT V8 STARTED")
+    print("BOT V9 STARTED")
 
     while True:
 
@@ -267,13 +356,15 @@ def run_bot():
 
             if market_open():
 
-                print("LIVE SCAN")
+                print("LIVE MODE")
 
                 run_live()
 
             else:
 
-                print("Market closed")
+                print("BACKTEST MODE")
+
+                run_backtest()
 
             time.sleep(SCAN_INTERVAL)
 
@@ -282,6 +373,8 @@ def run_bot():
             print("Error:",e)
 
             time.sleep(60)
+
+# =====================
 
 if __name__=="__main__":
 
