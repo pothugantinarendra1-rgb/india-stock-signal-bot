@@ -6,10 +6,6 @@ import time
 import pytz
 from datetime import datetime
 
-# =========================
-# CONFIG
-# =========================
-
 TELEGRAM_TOKEN="YOUR_TELEGRAM_TOKEN"
 CHAT_ID="YOUR_CHAT_ID"
 
@@ -20,21 +16,22 @@ SCAN_INTERVAL=180
 
 NIFTY="^NSEI"
 
-STOCKS=[
-"RELIANCE.NS","HDFCBANK.NS","ICICIBANK.NS","INFY.NS","TCS.NS",
-"SBIN.NS","AXISBANK.NS","ITC.NS","LT.NS","TMPV.NS",
-"BAJFINANCE.NS","HCLTECH.NS","ASIANPAINT.NS","MARUTI.NS",
-"KOTAKBANK.NS","SUNPHARMA.NS","ULTRACEMCO.NS","NTPC.NS",
-"TITAN.NS","POWERGRID.NS","ONGC.NS","ADANIENT.NS",
-"ADANIPORTS.NS","COALINDIA.NS","HINDALCO.NS",
-"JSWSTEEL.NS","TATASTEEL.NS","BAJAJFINSV.NS","INDUSINDBK.NS"
-]
+# Sector leaders
+SECTOR_STOCKS={
+"IT":["INFY.NS","TCS.NS","HCLTECH.NS"],
+"BANK":["HDFCBANK.NS","ICICIBANK.NS","AXISBANK.NS"],
+"ENERGY":["RELIANCE.NS","ONGC.NS"],
+"METAL":["TATASTEEL.NS","JSWSTEEL.NS"],
+"FMCG":["ITC.NS","HINDUNILVR.NS"]
+}
+
+STOCKS=[s for sector in SECTOR_STOCKS.values() for s in sector]
 
 last_signals={}
 
-# =========================
+# -----------------------
 # TELEGRAM
-# =========================
+# -----------------------
 
 def send_telegram(msg):
 
@@ -47,9 +44,9 @@ def send_telegram(msg):
 
     requests.post(url,data=payload)
 
-# =========================
+# -----------------------
 # MARKET HOURS
-# =========================
+# -----------------------
 
 def market_open():
 
@@ -65,36 +62,28 @@ def market_open():
 
     return start<=now<=end
 
-# =========================
-# BATCH DATA DOWNLOAD
-# =========================
+# -----------------------
+# DATA DOWNLOAD
+# -----------------------
 
-def download_market():
+def download_data():
 
     tickers=STOCKS+[NIFTY]
 
-    try:
+    data=yf.download(
+        tickers,
+        period="1d",
+        interval="1m",
+        group_by="ticker",
+        progress=False,
+        threads=False
+    )
 
-        data=yf.download(
-            tickers,
-            period="1d",
-            interval="1m",
-            group_by="ticker",
-            progress=False,
-            threads=False
-        )
+    return data
 
-        return data
-
-    except Exception as e:
-
-        print("Download error:",e)
-
-        return None
-
-# =========================
+# -----------------------
 # INDICATORS
-# =========================
+# -----------------------
 
 def add_vwap(df):
 
@@ -124,9 +113,9 @@ def add_atr(df):
 
     return df
 
-# =========================
+# -----------------------
 # MARKET TREND
-# =========================
+# -----------------------
 
 def market_bias(df):
 
@@ -140,9 +129,9 @@ def market_bias(df):
 
     return "BEAR"
 
-# =========================
+# -----------------------
 # SCORE
-# =========================
+# -----------------------
 
 def score_stock(df,bias):
 
@@ -160,7 +149,7 @@ def score_stock(df,bias):
 
     rel_vol=float(df["RelVol"].iloc[-1])
 
-    if rel_vol>1.8:
+    if rel_vol>2:
         score+=20
 
     prev_high=float(df["High"].iloc[-20:-1].max())
@@ -183,16 +172,13 @@ def score_stock(df,bias):
 
     return score
 
-# =========================
-# LIVE SCANNER
-# =========================
+# -----------------------
+# LIVE SCAN
+# -----------------------
 
 def run_live():
 
-    data=download_market()
-
-    if data is None:
-        return
+    data=download_data()
 
     nifty=data[NIFTY]
 
@@ -211,7 +197,7 @@ def run_live():
 
             score=score_stock(df,bias)
 
-            if score<70:
+            if score<65:
                 continue
 
             price=float(df["Close"].iloc[-1])
@@ -240,7 +226,7 @@ def run_live():
 
     trades=sorted(trades,key=lambda x:x[3],reverse=True)
 
-    top=trades[:3]
+    top=trades[:5]
 
     for trade in top:
 
@@ -250,7 +236,7 @@ def run_live():
         target=price*(1+TARGET) if signal=="BUY" else price*(1-TARGET)
 
         msg=f"""
-AI INTRADAY SIGNAL
+INSTITUTIONAL TRADE
 
 Stock: {symbol}
 Signal: {signal}
@@ -267,71 +253,13 @@ Time: {datetime.now()}
 
         print(msg)
 
-# =========================
-# BACKTEST
-# =========================
-
-def run_backtest():
-
-    print("Running backtest...")
-
-    for symbol in STOCKS[:10]:
-
-        try:
-
-            df=yf.download(symbol,period="60d",interval="5m",progress=False)
-
-            if len(df)<100:
-                continue
-
-            df=add_vwap(df)
-            df=add_rel_volume(df)
-            df=add_atr(df)
-
-            wins=0
-            losses=0
-
-            for i in range(50,len(df)-20):
-
-                price=float(df["Close"].iloc[i])
-
-                score=score_stock(df.iloc[:i],"BULL")
-
-                if score<70:
-                    continue
-
-                entry=price
-
-                sl=entry*(1-STOPLOSS)
-                target=entry*(1+TARGET)
-
-                future=df.iloc[i+1:i+20]
-
-                if future["High"].max()>=target:
-                    wins+=1
-
-                elif future["Low"].min()<=sl:
-                    losses+=1
-
-            total=wins+losses
-
-            if total>0:
-                winrate=(wins/total)*100
-            else:
-                winrate=0
-
-            print(symbol,"Winrate:",round(winrate,2),"% Trades:",total)
-
-        except:
-            continue
-
-# =========================
-# MAIN LOOP
-# =========================
+# -----------------------
+# BOT LOOP
+# -----------------------
 
 def run_bot():
 
-    print("BOT STARTED")
+    print("BOT V8 STARTED")
 
     while True:
 
@@ -339,15 +267,13 @@ def run_bot():
 
             if market_open():
 
-                print("LIVE MODE")
+                print("LIVE SCAN")
 
                 run_live()
 
             else:
 
-                print("BACKTEST MODE")
-
-                run_backtest()
+                print("Market closed")
 
             time.sleep(SCAN_INTERVAL)
 
