@@ -5,16 +5,37 @@ import requests
 import time
 from datetime import datetime
 
-TELEGRAM_TOKEN="8437837109:AAGMEHO_iqODz2ZQgpYsc-PQ9kiES2Rv06M"
-CHAT_ID="1476421832"
+# =========================
+# CONFIG
+# =========================
+
+TELEGRAM_TOKEN="YOUR_TELEGRAM_TOKEN"
+CHAT_ID="YOUR_CHAT_ID"
 
 NIFTY="^NSEI"
 
 STOPLOSS=0.007
 TARGET=0.016
 
+SCAN_INTERVAL=180
 
+# top liquid stocks
+STOCKS=[
+"RELIANCE.NS","HDFCBANK.NS","ICICIBANK.NS","INFY.NS","TCS.NS",
+"SBIN.NS","AXISBANK.NS","ITC.NS","LT.NS","TATAMOTORS.NS",
+"BAJFINANCE.NS","HCLTECH.NS","ASIANPAINT.NS","MARUTI.NS",
+"KOTAKBANK.NS","SUNPHARMA.NS","ULTRACEMCO.NS","NTPC.NS",
+"TITAN.NS","POWERGRID.NS","ONGC.NS","ADANIENT.NS","ADANIPORTS.NS",
+"COALINDIA.NS","HINDALCO.NS","JSWSTEEL.NS","GRASIM.NS",
+"TATASTEEL.NS","BAJAJFINSV.NS","INDUSINDBK.NS"
+]
+
+last_signals={}
+
+# =========================
 # TELEGRAM
+# =========================
+
 def send_telegram(msg):
 
     url=f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -27,41 +48,32 @@ def send_telegram(msg):
     requests.post(url,data=payload)
 
 
-# NSE STOCK LIST
-def load_nse_stocks():
-
-    url="https://archives.nseindia.com/content/equities/EQUITY_L.csv"
-
-    df=pd.read_csv(url)
-
-    stocks=[s+".NS" for s in df["SYMBOL"].tolist()]
-
-    return stocks[:200]
-
-
+# =========================
 # DATA
-def get_data(symbol,period="1d",interval="1m"):
+# =========================
 
-    df=yf.download(symbol,period=period,interval=interval,progress=False)
+def get_data(symbol):
+
+    df=yf.download(symbol,period="1d",interval="1m",progress=False)
 
     df.dropna(inplace=True)
 
     return df
 
 
-# VWAP
+# =========================
+# INDICATORS
+# =========================
+
 def add_vwap(df):
 
     tp=(df.High+df.Low+df.Close)/3
 
-    vwap=(tp*df.Volume).cumsum()/df.Volume.cumsum()
-
-    df["VWAP"]=vwap
+    df["VWAP"]=(tp*df.Volume).cumsum()/df.Volume.cumsum()
 
     return df
 
 
-# RELATIVE VOLUME
 def add_rel_volume(df):
 
     avg=df.Volume.rolling(20).mean()
@@ -71,7 +83,6 @@ def add_rel_volume(df):
     return df
 
 
-# ATR
 def add_atr(df):
 
     high_low=df.High-df.Low
@@ -85,7 +96,10 @@ def add_atr(df):
     return df
 
 
-# MARKET BIAS
+# =========================
+# MARKET TREND
+# =========================
+
 def market_bias():
 
     df=get_data(NIFTY)
@@ -95,41 +109,15 @@ def market_bias():
     last=df.iloc[-1]
 
     if last.Close>last.VWAP:
-
         return "BULL"
 
     return "BEAR"
 
 
-# LIQUIDITY SWEEP
-def liquidity_sweep(df):
-
-    prev_low=df.Low.iloc[-20:-1].min()
-
-    last=df.iloc[-1]
-
-    if last.Low<prev_low and last.Close>prev_low:
-
-        return True
-
-    return False
-
-
-# BREAKOUT STRENGTH
-def breakout_strength(df):
-
-    prev_high=df.High.iloc[-20:-1].max()
-
-    last=df.Close.iloc[-1]
-
-    if last>prev_high:
-
-        return True
-
-    return False
-
-
+# =========================
 # SCORE STOCK
+# =========================
+
 def score_stock(df,bias):
 
     df=add_vwap(df)
@@ -146,8 +134,10 @@ def score_stock(df,bias):
     if last.RelVol>1.8:
         score+=20
 
-    if liquidity_sweep(df):
-        score+=15
+    prev_high=df.High.iloc[-20:-1].max()
+
+    if last.Close>prev_high:
+        score+=20
 
     momentum=(last.Close-df.Close.iloc[-10])/df.Close.iloc[-10]
 
@@ -155,18 +145,18 @@ def score_stock(df,bias):
         score+=15
 
     if last.ATR>df.ATR.mean():
-        score+=10
+        score+=15
 
-    if breakout_strength(df):
-        score+=10
-
-    if bias=="BULL" and last.Close>last.VWAP:
+    if bias=="BULL":
         score+=10
 
     return score
 
 
-# GENERATE SIGNAL
+# =========================
+# SIGNAL
+# =========================
+
 def generate_signal(symbol,bias):
 
     df=get_data(symbol)
@@ -182,26 +172,24 @@ def generate_signal(symbol,bias):
     price=df.Close.iloc[-1]
 
     if price>df.VWAP.iloc[-1] and bias=="BULL":
-
         signal="BUY"
 
     elif price<df.VWAP.iloc[-1] and bias=="BEAR":
-
         signal="SELL"
 
     else:
-
         return None
 
     return symbol,signal,price,score
 
 
-# LIVE SCANNER
+# =========================
+# SCANNER
+# =========================
+
 def run_live():
 
-    print("Bot V6 running")
-
-    stocks=load_nse_stocks()
+    print("BOT STARTED")
 
     while True:
 
@@ -211,14 +199,22 @@ def run_live():
 
             trades=[]
 
-            for s in stocks:
+            for s in STOCKS:
 
                 try:
 
                     result=generate_signal(s,bias)
 
                     if result:
+
+                        symbol,signal,price,score=result
+
+                        if symbol in last_signals:
+                            continue
+
                         trades.append(result)
+
+                        last_signals[symbol]=True
 
                 except:
                     pass
@@ -236,18 +232,14 @@ def run_live():
                 target=price*(1+TARGET) if signal=="BUY" else price*(1-TARGET)
 
                 msg=f"""
-AI INSTITUTIONAL TRADE
+INTRADAY AI SIGNAL
 
 Stock: {symbol}
-
 Signal: {signal}
-
 Score: {score}
 
 Entry: {round(price,2)}
-
 Stoploss: {round(sl,2)}
-
 Target: {round(target,2)}
 
 Time: {datetime.now()}
@@ -257,7 +249,7 @@ Time: {datetime.now()}
 
                 print(msg)
 
-            time.sleep(60)
+            time.sleep(SCAN_INTERVAL)
 
         except Exception as e:
 
@@ -266,10 +258,13 @@ Time: {datetime.now()}
             time.sleep(60)
 
 
+# =========================
 # BACKTEST
+# =========================
+
 def backtest(symbol):
 
-    df=get_data(symbol,period="60d",interval="5m")
+    df=yf.download(symbol,period="60d",interval="5m",progress=False)
 
     df=add_vwap(df)
     df=add_rel_volume(df)
@@ -290,45 +285,29 @@ def backtest(symbol):
         entry=row.Close
 
         sl=entry*(1-STOPLOSS)
-
         target=entry*(1+TARGET)
 
         future=df.iloc[i+1:i+20]
 
         if future.High.max()>=target:
-
             wins+=1
-
         elif future.Low.min()<=sl:
-
             losses+=1
 
     total=wins+losses
 
     if total>0:
-
         winrate=(wins/total)*100
-
     else:
-
         winrate=0
 
     print(symbol,"Winrate:",round(winrate,2),"%","Trades:",total)
 
 
-# MAIN
+# =========================
+# START BOT
+# =========================
+
 if __name__=="__main__":
 
-    mode=input("mode (live/backtest): ")
-
-    if mode=="live":
-
-        run_live()
-
-    else:
-
-        stocks=load_nse_stocks()
-
-        for s in stocks[:20]:
-
-            backtest(s)
+    run_live()
