@@ -3,34 +3,34 @@ import pandas as pd
 import numpy as np
 import requests
 import time
+import pytz
 from datetime import datetime
 
 # =========================
 # CONFIG
 # =========================
 
-TELEGRAM_TOKEN="YOUR_TELEGRAM_TOKEN"
-CHAT_ID="YOUR_CHAT_ID"
+TELEGRAM_TOKEN = "YOUR_TELEGRAM_TOKEN"
+CHAT_ID = "YOUR_CHAT_ID"
 
-NIFTY="^NSEI"
+NIFTY = "^NSEI"
 
-STOPLOSS=0.007
-TARGET=0.016
+STOPLOSS = 0.007
+TARGET = 0.016
 
-SCAN_INTERVAL=180
+SCAN_INTERVAL = 180
 
-# top liquid stocks
-STOCKS=[
+STOCKS = [
 "RELIANCE.NS","HDFCBANK.NS","ICICIBANK.NS","INFY.NS","TCS.NS",
 "SBIN.NS","AXISBANK.NS","ITC.NS","LT.NS","TATAMOTORS.NS",
 "BAJFINANCE.NS","HCLTECH.NS","ASIANPAINT.NS","MARUTI.NS",
 "KOTAKBANK.NS","SUNPHARMA.NS","ULTRACEMCO.NS","NTPC.NS",
-"TITAN.NS","POWERGRID.NS","ONGC.NS","ADANIENT.NS","ADANIPORTS.NS",
-"COALINDIA.NS","HINDALCO.NS","JSWSTEEL.NS","GRASIM.NS",
-"TATASTEEL.NS","BAJAJFINSV.NS","INDUSINDBK.NS"
+"TITAN.NS","POWERGRID.NS","ONGC.NS","ADANIENT.NS",
+"ADANIPORTS.NS","COALINDIA.NS","HINDALCO.NS",
+"JSWSTEEL.NS","TATASTEEL.NS","BAJAJFINSV.NS","INDUSINDBK.NS"
 ]
 
-last_signals={}
+last_signals = {}
 
 # =========================
 # TELEGRAM
@@ -38,15 +38,31 @@ last_signals={}
 
 def send_telegram(msg):
 
-    url=f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 
-    payload={
-        "chat_id":CHAT_ID,
-        "text":msg
+    payload = {
+        "chat_id": CHAT_ID,
+        "text": msg
     }
 
-    requests.post(url,data=payload)
+    requests.post(url, data=payload)
 
+# =========================
+# MARKET HOURS
+# =========================
+
+def market_open():
+
+    india = pytz.timezone("Asia/Kolkata")
+    now = datetime.now(india)
+
+    if now.weekday() >= 5:
+        return False
+
+    start = now.replace(hour=9, minute=15, second=0)
+    end = now.replace(hour=15, minute=30, second=0)
+
+    return start <= now <= end
 
 # =========================
 # DATA
@@ -54,12 +70,11 @@ def send_telegram(msg):
 
 def get_data(symbol):
 
-    df=yf.download(symbol,period="1d",interval="1m",progress=False)
+    df = yf.download(symbol, period="1d", interval="1m", progress=False)
 
     df.dropna(inplace=True)
 
     return df
-
 
 # =========================
 # INDICATORS
@@ -67,34 +82,31 @@ def get_data(symbol):
 
 def add_vwap(df):
 
-    tp=(df.High+df.Low+df.Close)/3
+    tp = (df["High"] + df["Low"] + df["Close"]) / 3
 
-    df["VWAP"]=(tp*df.Volume).cumsum()/df.Volume.cumsum()
+    df["VWAP"] = (tp * df["Volume"]).cumsum() / df["Volume"].cumsum()
 
     return df
-
 
 def add_rel_volume(df):
 
-    avg=df.Volume.rolling(20).mean()
+    avg = df["Volume"].rolling(20).mean()
 
-    df["RelVol"]=df.Volume/avg
+    df["RelVol"] = df["Volume"] / avg
 
     return df
-
 
 def add_atr(df):
 
-    high_low=df.High-df.Low
-    high_close=np.abs(df.High-df.Close.shift())
-    low_close=np.abs(df.Low-df.Close.shift())
+    high_low = df["High"] - df["Low"]
+    high_close = np.abs(df["High"] - df["Close"].shift())
+    low_close = np.abs(df["Low"] - df["Close"].shift())
 
-    tr=pd.concat([high_low,high_close,low_close],axis=1).max(axis=1)
+    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
 
-    df["ATR"]=tr.rolling(14).mean()
+    df["ATR"] = tr.rolling(14).mean()
 
     return df
-
 
 # =========================
 # MARKET TREND
@@ -102,137 +114,134 @@ def add_atr(df):
 
 def market_bias():
 
-    df=get_data(NIFTY)
+    df = get_data(NIFTY)
 
-    df=add_vwap(df)
+    df = add_vwap(df)
 
-    last=df.iloc[-1]
+    price = float(df["Close"].iloc[-1])
+    vwap = float(df["VWAP"].iloc[-1])
 
-    if last.Close>last.VWAP:
+    if price > vwap:
         return "BULL"
 
     return "BEAR"
-
 
 # =========================
 # SCORE STOCK
 # =========================
 
-def score_stock(df,bias):
+def score_stock(df, bias):
 
-    df=add_vwap(df)
-    df=add_rel_volume(df)
-    df=add_atr(df)
+    df = add_vwap(df)
+    df = add_rel_volume(df)
+    df = add_atr(df)
 
-    last=df.iloc[-1]
+    price = float(df["Close"].iloc[-1])
+    vwap = float(df["VWAP"].iloc[-1])
 
-    score=0
+    score = 0
 
-    if last.Close>last.VWAP:
-        score+=20
+    if price > vwap:
+        score += 20
 
-    if last.RelVol>1.8:
-        score+=20
+    rel_vol = float(df["RelVol"].iloc[-1])
 
-    prev_high=df.High.iloc[-20:-1].max()
+    if rel_vol > 1.8:
+        score += 20
 
-    if last.Close>prev_high:
-        score+=20
+    prev_high = float(df["High"].iloc[-20:-1].max())
 
-    momentum=(last.Close-df.Close.iloc[-10])/df.Close.iloc[-10]
+    if price > prev_high:
+        score += 20
 
-    if momentum>0:
-        score+=15
+    momentum = (price - df["Close"].iloc[-10]) / df["Close"].iloc[-10]
 
-    if last.ATR>df.ATR.mean():
-        score+=15
+    if momentum > 0:
+        score += 15
 
-    if bias=="BULL":
-        score+=10
+    atr = float(df["ATR"].iloc[-1])
+
+    if atr > df["ATR"].mean():
+        score += 15
+
+    if bias == "BULL":
+        score += 10
 
     return score
-
 
 # =========================
 # SIGNAL
 # =========================
 
-def generate_signal(symbol,bias):
+def generate_signal(symbol, bias):
 
-    df=get_data(symbol)
+    df = get_data(symbol)
 
-    if len(df)<40:
+    if len(df) < 40:
         return None
 
-    score=score_stock(df,bias)
+    score = score_stock(df, bias)
 
-    if score<70:
+    if score < 70:
         return None
 
-    price=df.Close.iloc[-1]
+    price = float(df["Close"].iloc[-1])
+    vwap = float(df["VWAP"].iloc[-1])
 
-    if price>df.VWAP.iloc[-1] and bias=="BULL":
-        signal="BUY"
+    if price > vwap and bias == "BULL":
+        signal = "BUY"
 
-    elif price<df.VWAP.iloc[-1] and bias=="BEAR":
-        signal="SELL"
+    elif price < vwap and bias == "BEAR":
+        signal = "SELL"
 
     else:
         return None
 
-    return symbol,signal,price,score
-
+    return symbol, signal, price, score
 
 # =========================
-# SCANNER
+# LIVE SCANNER
 # =========================
 
 def run_live():
 
-    print("BOT STARTED")
+    bias = market_bias()
 
-    while True:
+    trades = []
+
+    for s in STOCKS:
 
         try:
 
-            bias=market_bias()
+            result = generate_signal(s, bias)
 
-            trades=[]
+            if result:
 
-            for s in STOCKS:
+                symbol, signal, price, score = result
 
-                try:
+                if symbol in last_signals:
+                    continue
 
-                    result=generate_signal(s,bias)
+                trades.append(result)
 
-                    if result:
+                last_signals[symbol] = True
 
-                        symbol,signal,price,score=result
+        except:
+            pass
 
-                        if symbol in last_signals:
-                            continue
+    trades = sorted(trades, key=lambda x: x[3], reverse=True)
 
-                        trades.append(result)
+    top = trades[:3]
 
-                        last_signals[symbol]=True
+    for trade in top:
 
-                except:
-                    pass
+        symbol, signal, price, score = trade
 
-            trades=sorted(trades,key=lambda x:x[3],reverse=True)
+        sl = price*(1-STOPLOSS) if signal=="BUY" else price*(1+STOPLOSS)
+        target = price*(1+TARGET) if signal=="BUY" else price*(1-TARGET)
 
-            top=trades[:3]
-
-            for trade in top:
-
-                symbol,signal,price,score=trade
-
-                sl=price*(1-STOPLOSS) if signal=="BUY" else price*(1+STOPLOSS)
-
-                target=price*(1+TARGET) if signal=="BUY" else price*(1-TARGET)
-
-                msg=f"""
-INTRADAY AI SIGNAL
+        msg=f"""
+AI INTRADAY SIGNAL
 
 Stock: {symbol}
 Signal: {signal}
@@ -245,69 +254,98 @@ Target: {round(target,2)}
 Time: {datetime.now()}
 """
 
-                send_telegram(msg)
+        send_telegram(msg)
 
-                print(msg)
-
-            time.sleep(SCAN_INTERVAL)
-
-        except Exception as e:
-
-            print("Error:",e)
-
-            time.sleep(60)
-
+        print(msg)
 
 # =========================
 # BACKTEST
 # =========================
 
-def backtest(symbol):
+def run_backtest():
 
-    df=yf.download(symbol,period="60d",interval="5m",progress=False)
+    print("Running backtest...")
 
-    df=add_vwap(df)
-    df=add_rel_volume(df)
-    df=add_atr(df)
+    for s in STOCKS[:10]:
 
-    wins=0
-    losses=0
+        try:
 
-    for i in range(50,len(df)-20):
+            df = yf.download(s, period="60d", interval="5m", progress=False)
 
-        row=df.iloc[i]
+            df = add_vwap(df)
+            df = add_rel_volume(df)
+            df = add_atr(df)
 
-        score=score_stock(df.iloc[:i],"BULL")
+            wins = 0
+            losses = 0
 
-        if score<70:
-            continue
+            for i in range(50, len(df)-20):
 
-        entry=row.Close
+                price = float(df["Close"].iloc[i])
 
-        sl=entry*(1-STOPLOSS)
-        target=entry*(1+TARGET)
+                score = score_stock(df.iloc[:i], "BULL")
 
-        future=df.iloc[i+1:i+20]
+                if score < 70:
+                    continue
 
-        if future.High.max()>=target:
-            wins+=1
-        elif future.Low.min()<=sl:
-            losses+=1
+                entry = price
 
-    total=wins+losses
+                sl = entry*(1-STOPLOSS)
+                target = entry*(1+TARGET)
 
-    if total>0:
-        winrate=(wins/total)*100
-    else:
-        winrate=0
+                future = df.iloc[i+1:i+20]
 
-    print(symbol,"Winrate:",round(winrate,2),"%","Trades:",total)
+                if future["High"].max() >= target:
+                    wins += 1
+                elif future["Low"].min() <= sl:
+                    losses += 1
 
+            total = wins + losses
+
+            if total > 0:
+                winrate = (wins/total)*100
+            else:
+                winrate = 0
+
+            print(s,"Winrate:",round(winrate,2),"%","Trades:",total)
+
+        except:
+            pass
 
 # =========================
-# START BOT
+# MAIN LOOP
 # =========================
 
-if __name__=="__main__":
+def run_bot():
 
-    run_live()
+    print("BOT STARTED")
+
+    while True:
+
+        try:
+
+            if market_open():
+
+                print("LIVE MODE")
+
+                run_live()
+
+            else:
+
+                print("BACKTEST MODE")
+
+                run_backtest()
+
+            time.sleep(SCAN_INTERVAL)
+
+        except Exception as e:
+
+            print("Error:", e)
+
+            time.sleep(60)
+
+# =========================
+
+if __name__ == "__main__":
+
+    run_bot()
